@@ -1,0 +1,42 @@
+﻿{
+  "manifest_version": 3,
+  "name": "amv-cp-bridge Sidecar",
+  "version": "1.0.0",
+  "description": "네이버 웨일 및 크롬 사이드바에서 M365 Copilot (GPT-5.6 Sol)을 즉시 호출하는 무누수(Zero-Leak) AI 사이드바 확장 프로그램 (amv-cp-bridge)",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_title": "amv-cp-bridge 사이드바 열기"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": [
+    "sidePanel",
+    "contextMenus",
+    "storage",
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:11500/*",
+    "http://localhost:11500/*",
+    "http://127.0.0.1:8089/*",
+    "http://localhost:8089/*"
+  ],
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+Y",
+        "mac": "Command+Shift+Y"
+      },
+      "description": "amv-cp-bridge 사이드바 토글"
+    }
+  }
+}

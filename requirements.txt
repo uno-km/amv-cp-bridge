@@ -1,0 +1,9 @@
+playwright>=1.40.0
+mcp>=1.0.0
+fastapi>=0.100.0
+uvicorn>=0.22.0
+customtkinter>=5.2.0
+Pillow>=10.0.0
+markdown2>=2.4.0
+tkinterweb>=3.23.0
+pystray>=0.19.5

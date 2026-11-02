@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+.eggs/
+.venv/
+venv/
+env/
+dist/
+build/
+*.spec.bak
+
+# PyInstaller build artifacts (keep spec, delete intermediates)
+build/
+dist/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs & DB (local data, not for repo)
+*.log
+~/.amv_cp_bridge/
+
+# Secrets
+.env
+*.env
+accounts.json
+
+# Temp
+*.tmp
+*.bak
