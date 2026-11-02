@@ -56,6 +56,8 @@ Python이 없어도 됩니다. Python, Microsoft Edge(없는 경우), 필요한 
 powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/uno-km/amv-cp-bridge/master/scripts/setup_all.ps1 | iex"
 ```
 
+> **알려진 문제:** 2026-11-02 기준 Microsoft Defender가 이 명령을 `Trojan:Win32/Commando.A!ml`로 탐지해 차단하는 사례를 확인했습니다. 명령줄에 대한 탐지이며, 배포 EXE와 설치 스크립트 파일은 같은 PC의 Defender 검사에서 탐지되지 않았습니다. 앱 안의 `업데이트` 버튼도 같은 명령을 사용합니다. 차단되면 Defender를 끄지 말고 아래 [EXE 실행](#방법-1-exe-실행) 방법으로 최신 버전을 받으십시오.
+
 **macOS** (터미널에 붙여넣기)
 
 ```bash
@@ -428,6 +430,8 @@ Windows (PowerShell or cmd):
 ```
 powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/uno-km/amv-cp-bridge/master/scripts/setup_all.ps1 | iex"
 ```
+
+> **Known issue:** As of 2026-11-02, Microsoft Defender was observed blocking this Windows command as `Trojan:Win32/Commando.A!ml`. The detection applies to the command line. The release EXE and the setup script file had no detection in a Defender scan on the same PC. The in-app `업데이트` button uses the same command. If it is blocked, keep Defender on and download the EXE from Releases.
 
 macOS (Terminal):
 ```bash
