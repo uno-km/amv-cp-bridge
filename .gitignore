@@ -9,13 +9,11 @@ __pycache__/
 .venv/
 venv/
 env/
-dist/
-build/
 *.spec.bak
 
-# PyInstaller build artifacts (keep spec, delete intermediates)
-build/
-dist/
+# PyInstaller build artifacts (keep spec and scripts/build, delete intermediates)
+/build/
+/dist/
 
 # OS
 .DS_Store
