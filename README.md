@@ -4,7 +4,7 @@
 
 **M365 Copilot을 로컬 OpenAI 규격 REST API, FastMCP 및 브라우저 확장프로그램으로 직결하는 지능형 데스크톱 브릿지**
 
-[English](#english) | 한국어
+[English](#english) | 한국어 | [🤖 FOR_AI_README (AI 전용 운영 매뉴얼)](FOR_AI_README.md)
 
 <p>
   <img src="https://img.shields.io/badge/v1.0.2-blue?style=flat-square" alt="version">
