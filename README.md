@@ -345,21 +345,12 @@ del /f amv-cp-bridge.exe
 
 ---
 
-## 보안 및 지식재산권 보호
+## 보안
 
-### 코드 보호 정책
-
-- 배포 EXE는 PyInstaller로 패키징되어 소스코드가 직접 노출되지 않습니다
-- 소스 저장소의 Python 파일은 Apache-2.0 OR Commercial 이중 라이선스 하에 공개됩니다
-- **역공학(Reverse Engineering), 코드 추출, 무단 복제, 재배포는 Commercial License 조건 위반입니다**
-- 학술/개인 비상업 목적에는 Apache-2.0이 적용됩니다
-- 상업적 사용 시 별도 Commercial License 취득이 필요합니다: contact@uno-km.com
-
-### 기술적 보호 조치
-
-- 배포 바이너리(EXE)에는 코드 난독화가 적용되어 있습니다
-- Copilot 세션은 로컬에만 유지되며, 외부 서버로 자격증명이 전송되지 않습니다
-- 텔레메트리 DB(`~/.amv_cp_bridge/telemetry.db`)는 로컬 전용입니다
+- 배포 EXE는 PyInstaller로 패키징됩니다 (`scripts/build/amv-cp-bridge.spec`)
+- Copilot 세션 및 자격증명은 로컬 Edge 프로파일에만 유지되며, 외부 서버로 전송되지 않습니다
+- 텔레메트리 DB (`~/.amv_cp_bridge/telemetry.db`)는 로컬 전용입니다
+- 소스코드는 [`amv_cp_bridge/`](amv_cp_bridge/) 디렉토리에서 직접 확인할 수 있습니다
 
 ---
 
@@ -519,13 +510,12 @@ python -m pip uninstall -y amv-cp-bridge
 
 > Browser extensions must be removed manually via `chrome://extensions`.
 
-### Security & IP Protection
+### Security
 
-- Distributed EXE is packaged with PyInstaller — source code is not directly accessible
-- **Reverse engineering, code extraction, and unauthorized redistribution violate the Commercial License terms**
-- Personal/academic non-commercial use: Apache-2.0 applies
-- Commercial use requires a separate Commercial License: contact@uno-km.com
-- All telemetry stays local (`~/.amv_cp_bridge/telemetry.db`). No credentials are transmitted externally
+- EXE is packaged with PyInstaller (`scripts/build/amv-cp-bridge.spec`)
+- Copilot sessions and credentials remain in the local Edge profile — nothing is sent to external servers
+- Telemetry (`~/.amv_cp_bridge/telemetry.db`) is local-only
+- Source code is available in the [`amv_cp_bridge/`](amv_cp_bridge/) directory
 
 ### License
 
