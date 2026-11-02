@@ -1253,23 +1253,19 @@ p{{margin:.6em 0}}
                 if resp.status != 200:
                     raise ConnectionError(f"SSE {resp.status}")
                 app_root.after(0, lambda: _on_sse_connect(True))
-                buf = ""
                 while not _sse_stop.is_set():
-                    chunk = resp.read(1)
-                    if not chunk:
+                    raw_line = resp.readline()
+                    if not raw_line:
                         break
-                    buf += chunk.decode("utf-8", errors="ignore")
-                    while "\n" in buf:
-                        line, buf = buf.split("\n", 1)
-                        line = line.rstrip("\r")
-                        if line.startswith("data: "):
-                            raw = line[6:].strip()
-                            if raw and raw != "[DONE]":
-                                try:
-                                    evt = json.loads(raw)
-                                    app_root.after(0, lambda e=evt: _on_sse_event(e))
-                                except json.JSONDecodeError:
-                                    pass
+                    line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
+                    if line.startswith("data: "):
+                        raw = line[6:].strip()
+                        if raw and raw != "[DONE]":
+                            try:
+                                evt = json.loads(raw)
+                                app_root.after(0, lambda e=evt: _on_sse_event(e))
+                            except json.JSONDecodeError:
+                                pass
             except Exception:
                 app_root.after(0, lambda: _on_sse_connect(False))
                 for _ in range(30):
@@ -1556,6 +1552,10 @@ p{{margin:.6em 0}}
             pass
 
     def _on_close():
+        # pystray는 macOS에서 메인 스레드 실행이 필수이며, 메인 스레드는 Tk가 사용한다. Dock으로 내린다.
+        if sys.platform == "darwin":
+            app_root.iconify()
+            return
         app_root.withdraw()
         if _tray_icon_ref[0] is None:
             threading.Thread(target=_start_tray, daemon=True).start()

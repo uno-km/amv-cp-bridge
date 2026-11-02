@@ -70,6 +70,14 @@ def static_checks(version: str) -> None:
     non_ascii = [name for name in tracked if not name.isascii()]
     check("A-09 ASCII script names", not non_ascii, str(non_ascii) if non_ascii else "")
 
+    unit = subprocess.run([str(VENV_PYTHON), "-m", "unittest", "discover", "-s", "tests"], cwd=ROOT,
+                          capture_output=True, text=True, encoding="utf-8", errors="replace",
+                          env=dict(os.environ, USERPROFILE=str(HOME), PYTHONIOENCODING="utf-8"))
+    check("Unit tests", unit.returncode == 0, unit.stderr[-300:] if unit.returncode else "")
+
+    multiline = readme_multiline_commands()
+    check("README commands are one line", not multiline, str(multiline) if multiline else "")
+
     sources = {
         "extension/manifest.json": json.loads((ROOT / "extension/manifest.json").read_text(encoding="utf-8-sig"))["version"],
         "README badge": (re.search(r"badge/v([\d.]+)-", (ROOT / "README.md").read_text(encoding="utf-8")) or [None, ""])[1],
@@ -90,6 +98,17 @@ def static_checks(version: str) -> None:
         capture_output=True, text=True, env=dict(os.environ, USERPROFILE=str(HOME)))
     check("B-03/I-01 rate limit 30 per minute", limiter.stdout.strip() == "30",
           limiter.stdout.strip() or limiter.stderr[-300:])
+
+
+def readme_multiline_commands() -> list:
+    """Returns fenced README blocks, other than text and JSON, that hold more than one line."""
+    found = []
+    readme = (ROOT / "README.md").read_text(encoding="utf-8").replace("\r\n", "\n")
+    for match in re.finditer(r"^```(\w*)\n(.*?)^```$", readme, re.M | re.S):
+        lines = [line for line in match.group(2).splitlines() if line.strip()]
+        if match.group(1) not in ("text", "json") and len(lines) != 1:
+            found.append(lines[0] if lines else "(empty)")
+    return found
 
 
 def gateway_checks(version: str, env: dict) -> None:

@@ -7,7 +7,7 @@
 [English](#english) | 한국어
 
 <p>
-  <img src="https://img.shields.io/badge/v1.0.1-blue?style=flat-square" alt="version">
+  <img src="https://img.shields.io/badge/v1.0.2-blue?style=flat-square" alt="version">
   <img src="https://img.shields.io/badge/Windows%20%7C%20macOS-supported-green?style=flat-square" alt="platform">
   <img src="https://img.shields.io/badge/License-Apache--2.0-blue?style=flat-square" alt="license">
 </p>
@@ -46,6 +46,8 @@ Microsoft 365 Copilot (Enterprise/Edu) 라이선스가 있지만 API가 없어�
 
 ### 원터치 설치 (권장)
 
+README의 명령은 모두 한 줄입니다. 여러 단계는 `&&`로 이어 두었으므로, 붙여 넣어도 앞 단계가 실패하면 뒤 단계는 실행되지 않습니다.
+
 Python이 없어도 됩니다. Python, Microsoft Edge(없는 경우), 필요한 라이브러리, 프로그램을 모두 설치한 뒤 실행합니다.
 
 **Windows** (PowerShell 또는 cmd에 붙여넣기)
@@ -73,20 +75,21 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/uno-km/amv-cp-bridge/mas
 
 #### 방법 2: 스크립트 실행
 
-`scripts/windows/` 폴더 안에 있는 스크립트를 더블클릭합니다:
+`scripts/windows/` 폴더 안에 있는 스크립트를 더블클릭합니다. 터미널 명령이 아닙니다.
 
-```
-scripts/windows/1_install.bat      ← Python 확인 + 의존성 설치
-scripts/windows/2_dashboard.bat    ← 대시보드 + API 서버 시작
-scripts/windows/3_gateway.bat      ← API 서버만 시작 (GUI 없음)
-scripts/windows/4_purge.bat        ← 잔여 Edge 프로세스 정리
-```
+| 파일 | 동작 |
+|------|------|
+| `1_install.bat` | Python 확인 + 의존성 설치 |
+| `2_dashboard.bat` | 대시보드 + API 서버 시작 |
+| `3_gateway.bat` | API 서버만 시작 (GUI 없음) |
+| `4_purge.bat` | 잔여 Edge 프로세스 정리 |
 
 #### 방법 3: 직접 설치
 
-```bash
-pip install -e .
-amv-cp-bridge dashboard
+저장소 폴더에서 실행합니다. PowerShell과 cmd 모두 동작합니다.
+
+```
+cmd /c "pip install -e . && amv-cp-bridge dashboard"
 ```
 
 ---
@@ -97,10 +100,7 @@ amv-cp-bridge dashboard
 
 또는 직접:
 ```bash
-git clone https://github.com/uno-km/amv-cp-bridge.git
-cd amv-cp-bridge
-pip install -e .
-amv-cp-bridge dashboard
+git clone https://github.com/uno-km/amv-cp-bridge.git && cd amv-cp-bridge && pip install -e . && amv-cp-bridge dashboard
 ```
 
 ---
@@ -135,14 +135,16 @@ amv-cp-bridge dashboard
 
 ### REST API
 
+**macOS, Linux, Git Bash**
+
 ```bash
-curl http://localhost:11500/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-5.6-sol",
-    "messages": [{"role": "user", "content": "안녕하세요"}],
-    "stream": true
-  }'
+curl -N http://localhost:11500/v1/chat/completions -H "Content-Type: application/json" -d '{"model":"gpt-5.6-sol","messages":[{"role":"user","content":"Hello"}],"stream":true}'
+```
+
+**Windows PowerShell**
+
+```powershell
+irm http://localhost:11500/v1/chat/completions -Method Post -ContentType application/json -Body '{"model":"gpt-5.6-sol","messages":[{"role":"user","content":"Hello"}]}' | ConvertTo-Json -Depth 6
 ```
 
 모델명은 아무거나 써도 됩니다. 실제로는 M365 Copilot이 응답합니다.
@@ -218,14 +220,13 @@ amv-cp-bridge gateway --port 11500
 
 ### Safari 확장프로그램 (macOS)
 
-Safari Web Extension은 Chrome 확장프로그램을 변환하여 사용합니다.
+Safari Web Extension은 Chrome 확장프로그램을 변환하여 사용합니다. Xcode Command Line Tools가 필요합니다.
 
 ```bash
-# Xcode Command Line Tools 필요
-cd extension-safari
-bash convert.sh
-# 생성된 Xcode 프로젝트를 빌드 후 Safari에서 활성화
+cd extension-safari && bash convert.sh
 ```
+
+명령이 끝나면 생성된 Xcode 프로젝트를 빌드한 뒤 Safari에서 활성화합니다.
 
 자세한 안내: [extension-safari/README.md](extension-safari/README.md)
 
@@ -252,13 +253,13 @@ bash convert.sh
 
 macOS의 경우 profile_dir을 `~/.amv_cp_bridge/profiles/account1` 형식으로 지정합니다.
 
-여러 계정을 등록하면 자동으로 로드밸런싱됩니다 (하나가 사용 중이면 다음 계정으로).
+여러 계정을 등록해도 요청은 한 번에 하나씩 순서대로 처리합니다. 처리는 첫 번째 계정이 맡고, 첫 번째 계정이 로그인 창으로 사용 중일 때만 다음 계정을 사용합니다.
 
 ---
 
 ## 프로젝트 구조
 
-```
+```text
 amv-cp-bridge/
 ├── amv_cp_bridge/          # 핵심 Python 패키지
 │   ├── cli.py              # CLI 엔트리포인트
@@ -372,7 +373,7 @@ It automates a headless Edge browser to send prompts to Copilot and stream back 
 
 - **OpenAI-compatible API**: `POST http://localhost:11500/v1/chat/completions`
 - **Zero memory leak**: Browser process is killed immediately after each query
-- **Multi-account load balancing**: Register multiple M365 accounts for automatic failover
+- **Multiple accounts**: Requests run one at a time on the first account. The next account is used only while the first has its sign-in window open
 - **MCP server**: Works with Claude Desktop, Cursor, and other MCP-compatible tools
 - **Browser extension**: Chrome/Whale sidebar for quick access
 - **Safari extension**: Convert from Chrome extension using Xcode (macOS)
@@ -387,7 +388,7 @@ It automates a headless Edge browser to send prompts to Copilot and stream back 
 
 ### Project structure
 
-```
+```text
 amv-cp-bridge/
 ├── amv_cp_bridge/          # Core Python package
 │   ├── cli.py              # CLI entry point
@@ -419,6 +420,8 @@ amv-cp-bridge/
 
 ### Quick start
 
+Every command in this README is one line. Steps are joined with `&&`, so a later step does not run after an earlier step fails.
+
 **One-line install (recommended).** Python is not required. Installs Python, Microsoft Edge (when absent), all libraries, and the application, then starts it.
 
 Windows (PowerShell or cmd):
@@ -437,17 +440,16 @@ The application checks for a new version at startup and offers `업데이트` (u
 Download `amv-cp-bridge.exe` from [Releases](https://github.com/uno-km/amv-cp-bridge/releases) and double-click.
 
 **Windows (scripts):**
-```
-scripts/windows/1_install.bat      ← Install Python deps
-scripts/windows/2_dashboard.bat    ← Start dashboard + API server
+Double-click `scripts/windows/1_install.bat` to install the Python dependencies, then `scripts/windows/2_dashboard.bat` to start the dashboard and API server.
+
+**From source (macOS, Linux, Git Bash):**
+```bash
+git clone https://github.com/uno-km/amv-cp-bridge.git && cd amv-cp-bridge && pip install -e . && amv-cp-bridge dashboard
 ```
 
-**From source (any platform):**
-```bash
-git clone https://github.com/uno-km/amv-cp-bridge.git
-cd amv-cp-bridge
-pip install -e .
-amv-cp-bridge dashboard
+**From source (Windows PowerShell or cmd, inside the repository folder):**
+```
+cmd /c "pip install -e . && amv-cp-bridge dashboard"
 ```
 
 ### Prerequisites
@@ -459,10 +461,14 @@ amv-cp-bridge dashboard
 
 ### API usage
 
+macOS, Linux, Git Bash:
 ```bash
-curl http://localhost:11500/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model":"any","messages":[{"role":"user","content":"Hello"}],"stream":true}'
+curl -N http://localhost:11500/v1/chat/completions -H "Content-Type: application/json" -d '{"model":"any","messages":[{"role":"user","content":"Hello"}],"stream":true}'
+```
+
+Windows PowerShell:
+```powershell
+irm http://localhost:11500/v1/chat/completions -Method Post -ContentType application/json -Body '{"model":"any","messages":[{"role":"user","content":"Hello"}]}' | ConvertTo-Json -Depth 6
 ```
 
 ### MCP setup
@@ -491,8 +497,9 @@ Claude Desktop (`claude_desktop_config.json`):
 
 ```bash
 cd extension-safari && bash convert.sh
-# Build the generated Xcode project, then enable in Safari > Settings > Extensions
 ```
+
+Build the generated Xcode project, then enable it in Safari > Settings > Extensions.
 
 ### Uninstall
 

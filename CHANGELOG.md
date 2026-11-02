@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.0.2
+
+### Fixed
+- The account name appeared as `:9333` on the main window, and Korean text disappeared from the request queue. The native GUI decoded the live event stream one byte at a time, which discarded multi-byte characters.
+- Words such as `복사`, `공유`, and `편집` were removed from answers wherever they appeared. Only status text before the answer and button labels on their own line are now removed.
+- The Copilot status text `진행 중…` could appear at the start of an answer.
+- On macOS, closing the window could leave no way to reopen it, because the tray library requires the main thread. The window now minimizes to the Dock. This change has not been run on macOS.
+- The uninstaller wrote `claude_desktop_config.json` with a UTF-8 byte order mark. The file is now written without one.
+- The uninstaller reported a path error when the Desktop folder could not be resolved.
+- A damaged `telemetry.db` stopped the application with a raw SQLite error. The error now names the file and how to recover.
+
+### Changed
+- README commands are one line each, joined with `&&` so that a later step does not run after an earlier step fails. The Windows script list is now a table because those files are not terminal commands.
+- PowerShell examples were added for the REST API because `curl` in Windows PowerShell 5.1 is an alias with different arguments.
+- The release regression check fails when a README shell block has more than one line.
+- The README no longer describes multi-account load balancing. Requests run one at a time, and the first free account in the list handles them. The behavior did not change in this release.
+
 ## 1.0.1
 
 ### Added

@@ -17,7 +17,13 @@ DB_PATH = DB_DIR / "telemetry.db"
 class TelemetryDB:
     def __init__(self, db_path: Path = DB_PATH):
         self.db_path = db_path
-        self._init_db()
+        try:
+            self._init_db()
+        except sqlite3.DatabaseError as exc:
+            raise RuntimeError(
+                f"사용 기록 DB를 열 수 없습니다: {self.db_path} ({exc}). "
+                "프로그램을 종료하고 이 파일을 다른 곳으로 옮긴 뒤 다시 실행하십시오. 새 DB가 만들어집니다."
+            ) from exc
 
     def _get_connection(self) -> sqlite3.Connection:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)

@@ -1,7 +1,7 @@
 ﻿{
   "manifest_version": 3,
   "name": "amv-cp-bridge Sidecar",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "네이버 웨일 및 크롬 사이드바에서 M365 Copilot (GPT-5.6 Sol)을 즉시 호출하는 무누수(Zero-Leak) AI 사이드바 확장 프로그램 (amv-cp-bridge)",
   "icons": {
     "16": "icons/icon16.png",

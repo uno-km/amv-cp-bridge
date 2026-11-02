@@ -282,10 +282,16 @@ class CopilotWorker:
             "복사", "공유", "좋아요", "싫어요", "새로 고침", "편집",
             "준비 중입니다…", "준비 중입니다...", "생각 중…", "생각 중...",
             "잠시만 기다려 주세요…", "잠시만 기다려 주세요...", "살펴보는 중...", "살펴보는 중…",
-            "자세히 살펴보는 중…", "자세히 살펴보는 중...", "작업 중...", "작업 중…"
+            "자세히 살펴보는 중…", "자세히 살펴보는 중...", "작업 중...", "작업 중…",
+            "진행 중…", "진행 중..."
         }
-        for p in skip_phrases:
-            text = text.replace(p, "")
+        # 상태 문구는 응답 앞에만 붙는다. 본문의 같은 단어는 지우지 않는다.
+        stripped = text.lstrip()
+        status_prefix = next((p for p in skip_phrases if p.endswith(("…", "...")) and stripped.startswith(p)), None)
+        while status_prefix:
+            stripped = stripped[len(status_prefix):].lstrip()
+            status_prefix = next((p for p in skip_phrases if p.endswith(("…", "...")) and stripped.startswith(p)), None)
+        text = stripped
 
         lines = text.split("\n")
         clean_lines = []

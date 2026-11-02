@@ -53,7 +53,8 @@ $exePaths = @(Join-Path $installRoot 'amv-cp-bridge.exe')
 $processes = @(Get-Process -Name 'amv-cp-bridge' -ErrorAction SilentlyContinue)
 $exePaths += @($processes | ForEach-Object { $_.Path } | Where-Object { $_ })
 $exePaths += Join-Path $env:USERPROFILE 'Downloads\amv-cp-bridge.exe'
-$exePaths += Join-Path ([Environment]::GetFolderPath('Desktop')) 'amv-cp-bridge.exe'
+$desktop = [Environment]::GetFolderPath('Desktop')
+if ($desktop) { $exePaths += Join-Path $desktop 'amv-cp-bridge.exe' }
 $exePaths = @($exePaths | Select-Object -Unique)
 
 if ($processes.Count -gt 0) {
@@ -112,7 +113,7 @@ if ($keptEntries.Count -ne $pathEntries.Count) {
 $environment.Close()
 [Environment]::SetEnvironmentVariable('AMV_CP_BRIDGE_HOME', $null, 'User')
 
-Remove-PathChecked (Join-Path ([Environment]::GetFolderPath('Desktop')) 'amv-cp-bridge.lnk') 'Desktop shortcut'
+if ($desktop) { Remove-PathChecked (Join-Path $desktop 'amv-cp-bridge.lnk') 'Desktop shortcut' }
 
 $python = Get-Command python -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($python) {
@@ -132,7 +133,7 @@ foreach ($config in @((Join-Path $env:APPDATA 'Claude\claude_desktop_config.json
         $settings = Get-Content -LiteralPath $config -Raw -Encoding UTF8 | ConvertFrom-Json
         if ($settings.mcpServers -and $settings.mcpServers.PSObject.Properties.Name -contains 'copilot') {
             $settings.mcpServers.PSObject.Properties.Remove('copilot')
-            $settings | ConvertTo-Json -Depth 10 | Out-File -LiteralPath $config -Encoding utf8
+            [IO.File]::WriteAllText($config, ($settings | ConvertTo-Json -Depth 10), (New-Object Text.UTF8Encoding($false)))
             Write-Ok "MCP entry removed: $config"
         }
     } catch {
