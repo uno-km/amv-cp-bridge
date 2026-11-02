@@ -1,155 +1,157 @@
-# =============================================================================
-#  amv-cp-bridge :: Complete Uninstaller
-#  Usage: PowerShell -ExecutionPolicy Bypass -File 999.delete.ps1
-#  Optional flags:
-#    -KeepPlaywright   : skip Playwright browser cache removal
-#    -KeepEXE          : do not prompt to delete dist\amv-cp-bridge.exe
-# =============================================================================
 param(
     [switch]$KeepPlaywright,
     [switch]$KeepEXE
 )
 
-$ErrorActionPreference = "SilentlyContinue"
-$Host.UI.RawUI.WindowTitle = "amv-cp-bridge Uninstaller"
+$ProgressPreference = 'SilentlyContinue'
+$script:Failures = 0
 
-function Step { param($msg) Write-Host "  >> $msg" -ForegroundColor Yellow }
-function OK   { param($msg) Write-Host "  [v] $msg" -ForegroundColor Green }
-function SKIP { param($msg) Write-Host "  [-] $msg" -ForegroundColor DarkGray }
-function WARN { param($msg) Write-Host "  [!] $msg" -ForegroundColor Red }
+function Write-Ok([string]$Message) { Write-Host "[v] $Message" -ForegroundColor Green }
+function Write-Skip([string]$Message) { Write-Host "[-] $Message" -ForegroundColor DarkGray }
+function Write-Fail([string]$Message) { Write-Host "[x] $Message" -ForegroundColor Red; $script:Failures++ }
 
-Clear-Host
-Write-Host ""
-Write-Host "  ================================================================" -ForegroundColor Cyan
-Write-Host "   amv-cp-bridge :: Complete Uninstaller" -ForegroundColor Cyan
-Write-Host "  ================================================================" -ForegroundColor Cyan
-Write-Host ""
-
-# ── 1. Kill amv-cp-bridge GUI/server processes ───────────────────────────────
-Step "Stopping amv-cp-bridge processes..."
-$procs = Get-Process -Name "amv-cp-bridge" -ErrorAction SilentlyContinue
-if ($procs) {
-    $procs | Stop-Process -Force
-    Start-Sleep -Milliseconds 500
-    OK "amv-cp-bridge process(es) terminated  ($($procs.Count) killed)"
-} else {
-    OK "No amv-cp-bridge process running"
-}
-
-# ── 2. Release port 11500 ─────────────────────────────────────────────────────
-Step "Releasing port 11500..."
-$netOut = & netstat -ano -p TCP 2>$null
-foreach ($line in $netOut) {
-    if ($line -match "TCP\s+\S+:11500\s+\S+\s+LISTENING\s+(\d+)") {
-        $pid11 = $Matches[1]
-        if ($pid11 -and $pid11 -ne "0") {
-            & taskkill /F /PID $pid11 2>$null | Out-Null
-        }
-    }
-}
-OK "Port 11500 released"
-
-# ── 3. Kill orphaned headless Edge workers ────────────────────────────────────
-Step "Terminating orphaned Edge worker processes..."
-$headless = Get-Process -Name "msedge" -ErrorAction SilentlyContinue |
-            Where-Object { $_.MainWindowTitle -eq "" }
-if ($headless) {
-    $headless | Stop-Process -Force -ErrorAction SilentlyContinue
-    OK "Edge headless processes terminated  ($($headless.Count) killed)"
-} else {
-    OK "No orphaned Edge processes found"
-}
-
-# ── 4. Remove ~/.amv_cp_bridge/ (config, DB, logs) ───────────────────────────
-Step "Removing data directory..."
-$dataDir = Join-Path $env:USERPROFILE ".amv_cp_bridge"
-if (Test-Path $dataDir) {
-    Remove-Item -Recurse -Force $dataDir
-    OK "Data directory removed:  $dataDir"
-} else {
-    OK "Data directory not found (already clean)"
-}
-
-# ── 5. Uninstall pip package ──────────────────────────────────────────────────
-Step "Uninstalling pip package (amv-cp-bridge)..."
-$pipOut = & python -m pip show amv-cp-bridge 2>&1
-if ($pipOut -match "Name: amv") {
-    & python -m pip uninstall -y amv-cp-bridge 2>&1 | Out-Null
-    OK "pip package uninstalled"
-} else {
-    OK "pip package not installed (skipped)"
-}
-
-# ── 6. Remove MCP config entry from claude_desktop_config.json ───────────────
-Step "Cleaning MCP configuration..."
-$cfgCandidates = @(
-    (Join-Path $env:APPDATA   "Claude\claude_desktop_config.json"),
-    (Join-Path $env:USERPROFILE ".config\Claude\claude_desktop_config.json")
-)
-$mcpCleaned = $false
-foreach ($cfgPath in $cfgCandidates) {
-    if (Test-Path $cfgPath) {
-        try {
-            $raw = Get-Content $cfgPath -Raw
-            $cfg = $raw | ConvertFrom-Json
-            if ($cfg.mcpServers -and $cfg.mcpServers.PSObject.Properties.Name -contains "copilot") {
-                $cfg.mcpServers.PSObject.Properties.Remove("copilot")
-                $cfg | ConvertTo-Json -Depth 10 | Out-File $cfgPath -Encoding utf8 -NoNewline
-                OK "MCP entry 'copilot' removed from  $cfgPath"
-                $mcpCleaned = $true
-            }
-        } catch {
-            WARN "Failed to parse MCP config: $cfgPath"
-        }
-    }
-}
-if (-not $mcpCleaned) { OK "No MCP config entry to remove" }
-
-# ── 7. Playwright browser cache (optional) ────────────────────────────────────
-if (-not $KeepPlaywright) {
-    Step "Removing Playwright browser cache..."
-    $pwPaths = @(
-        (Join-Path $env:LOCALAPPDATA "ms-playwright"),
-        (Join-Path $env:USERPROFILE  ".cache\ms-playwright")
-    )
-    $pwRemoved = $false
-    foreach ($p in $pwPaths) {
-        if (Test-Path $p) {
-            Remove-Item -Recurse -Force $p -ErrorAction SilentlyContinue
-            OK "Playwright cache removed:  $p"
-            $pwRemoved = $true
-        }
-    }
-    if (-not $pwRemoved) { OK "No Playwright cache found" }
-} else {
-    SKIP "Playwright cache kept  (-KeepPlaywright flag set)"
-}
-
-# ── 8. Optionally delete the EXE ─────────────────────────────────────────────
-if (-not $KeepEXE) {
-    $exePath = Join-Path $PSScriptRoot "dist\amv-cp-bridge.exe"
-    if (Test-Path $exePath) {
-        Step "Removing EXE file..."
-        try {
-            Remove-Item -Force $exePath
-            $internalDir = Join-Path $PSScriptRoot "dist\_internal"
-            if (Test-Path $internalDir) { Remove-Item -Recurse -Force $internalDir }
-            OK "EXE removed:  $exePath"
-        } catch {
-            WARN "Could not remove EXE (may be running). Close it first and re-run."
-        }
+function Remove-PathChecked([string]$Path, [string]$Label) {
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $Path) {
+        Write-Fail "$Label could not be removed: $Path"
     } else {
-        OK "No EXE found in dist\ (skipped)"
+        Write-Ok "$Label removed: $Path"
     }
 }
 
-# ── Done ──────────────────────────────────────────────────────────────────────
-Write-Host ""
-Write-Host "  ================================================================" -ForegroundColor Cyan
-Write-Host "   All amv-cp-bridge data has been removed." -ForegroundColor Green
-Write-Host "  ================================================================" -ForegroundColor Cyan
-Write-Host ""
-Write-Host "  Reminder: browser extensions must be removed manually." -ForegroundColor Yellow
-Write-Host "    Chrome / Whale / Edge : go to  chrome://extensions" -ForegroundColor DarkGray
-Write-Host "               and click Remove on  amv-cp-bridge Sidecar" -ForegroundColor DarkGray
-Write-Host ""
+Write-Host '================================================'
+Write-Host ' amv-cp-bridge uninstall (Windows)'
+Write-Host '================================================'
+
+$dataDir = Join-Path $env:USERPROFILE '.amv_cp_bridge'
+$installRoot = Join-Path $env:LOCALAPPDATA 'amv-cp-bridge'
+$profiles = @(
+    (Join-Path $env:USERPROFILE 'copilot_profile_default'),
+    (Join-Path $env:USERPROFILE 'copilot_profile_secondary')
+)
+$accountsFile = Join-Path $dataDir 'accounts.json'
+if (Test-Path -LiteralPath $accountsFile) {
+    try {
+        $accounts = Get-Content -LiteralPath $accountsFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        foreach ($account in $accounts) {
+            if ($account.profile_dir) {
+                if ((Split-Path $account.profile_dir -Leaf) -like 'copilot_profile*' -or $account.profile_dir -like "$dataDir*") {
+                    $profiles += $account.profile_dir
+                } else {
+                    Write-Skip "Custom Edge profile kept: $($account.profile_dir)"
+                }
+            }
+        }
+    } catch {
+        Write-Fail "accounts.json could not be read: $($_.Exception.Message)"
+    }
+}
+$profiles = @($profiles | Select-Object -Unique)
+
+$exePaths = @(Join-Path $installRoot 'amv-cp-bridge.exe')
+$processes = @(Get-Process -Name 'amv-cp-bridge' -ErrorAction SilentlyContinue)
+$exePaths += @($processes | ForEach-Object { $_.Path } | Where-Object { $_ })
+$exePaths += Join-Path $env:USERPROFILE 'Downloads\amv-cp-bridge.exe'
+$exePaths += Join-Path ([Environment]::GetFolderPath('Desktop')) 'amv-cp-bridge.exe'
+$exePaths = @($exePaths | Select-Object -Unique)
+
+if ($processes.Count -gt 0) {
+    $processes | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 800
+    Write-Ok "Stopped amv-cp-bridge processes: $($processes.Count)"
+} else {
+    Write-Ok 'No amv-cp-bridge process running'
+}
+
+foreach ($line in (& netstat -ano -p TCP)) {
+    if ($line -match 'TCP\s+\S+:11500\s+\S+\s+LISTENING\s+(\d+)') {
+        $ownerId = $Matches[1]
+        $owner = Get-CimInstance Win32_Process -Filter "ProcessId = $ownerId" -ErrorAction SilentlyContinue
+        if ($owner -and $owner.CommandLine -match 'amv[-_]cp[-_]bridge') {
+            Stop-Process -Id $ownerId -Force -ErrorAction SilentlyContinue
+            Write-Ok "Released port 11500 (PID $ownerId)"
+        } else {
+            Write-Skip "Port 11500 belongs to another application and was left alone (PID $ownerId)"
+        }
+    }
+}
+
+$edgeWorkers = @(Get-CimInstance Win32_Process -Filter "Name = 'msedge.exe'" -ErrorAction SilentlyContinue | Where-Object {
+    $commandLine = $_.CommandLine
+    $commandLine -and ($profiles | Where-Object { $commandLine -like "*--user-data-dir=$_*" })
+})
+foreach ($worker in $edgeWorkers) { Stop-Process -Id $worker.ProcessId -Force -ErrorAction SilentlyContinue }
+if ($edgeWorkers.Count -gt 0) { Start-Sleep -Milliseconds 800 }
+Write-Ok "Stopped dedicated Edge processes: $($edgeWorkers.Count)"
+
+foreach ($edgeProfile in $profiles) { Remove-PathChecked $edgeProfile 'Edge profile' }
+Remove-PathChecked $dataDir 'Settings, database, and logs'
+
+if ($KeepEXE) {
+    if (Test-Path -LiteralPath $installRoot) {
+        Get-ChildItem -LiteralPath $installRoot -Force | Where-Object { $_.Name -ne 'amv-cp-bridge.exe' } | ForEach-Object {
+            Remove-PathChecked $_.FullName 'Installed component'
+        }
+    }
+    Write-Skip 'EXE kept (-KeepEXE)'
+} else {
+    foreach ($exe in $exePaths) { Remove-PathChecked $exe 'EXE' }
+    Remove-PathChecked $installRoot 'Install folder'
+}
+
+$binDir = Join-Path $installRoot 'bin'
+$environment = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
+$userPath = [string]$environment.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+$pathEntries = @($userPath -split ';' | Where-Object { $_ })
+$keptEntries = @($pathEntries | Where-Object { $_ -ne $binDir })
+if ($keptEntries.Count -ne $pathEntries.Count) {
+    $environment.SetValue('Path', ($keptEntries -join ';'), [Microsoft.Win32.RegistryValueKind]::ExpandString)
+    Write-Ok 'PATH entry removed'
+}
+$environment.Close()
+[Environment]::SetEnvironmentVariable('AMV_CP_BRIDGE_HOME', $null, 'User')
+
+Remove-PathChecked (Join-Path ([Environment]::GetFolderPath('Desktop')) 'amv-cp-bridge.lnk') 'Desktop shortcut'
+
+$python = Get-Command python -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($python) {
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    & $python.Source -m pip show amv-cp-bridge *> $null
+    if ($LASTEXITCODE -eq 0) {
+        & $python.Source -m pip uninstall -y amv-cp-bridge *> $null
+        if ($LASTEXITCODE -eq 0) { Write-Ok 'pip package removed' } else { Write-Fail 'pip package could not be removed' }
+    }
+    $ErrorActionPreference = $previousPreference
+}
+
+foreach ($config in @((Join-Path $env:APPDATA 'Claude\claude_desktop_config.json'), (Join-Path $env:USERPROFILE '.config\Claude\claude_desktop_config.json'))) {
+    if (-not (Test-Path -LiteralPath $config)) { continue }
+    try {
+        $settings = Get-Content -LiteralPath $config -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($settings.mcpServers -and $settings.mcpServers.PSObject.Properties.Name -contains 'copilot') {
+            $settings.mcpServers.PSObject.Properties.Remove('copilot')
+            $settings | ConvertTo-Json -Depth 10 | Out-File -LiteralPath $config -Encoding utf8
+            Write-Ok "MCP entry removed: $config"
+        }
+    } catch {
+        Write-Fail "MCP configuration could not be updated: $config"
+    }
+}
+
+if ($KeepPlaywright) {
+    Write-Skip 'Playwright cache kept (-KeepPlaywright)'
+} else {
+    Remove-PathChecked (Join-Path $env:LOCALAPPDATA 'ms-playwright') 'Playwright cache'
+    Remove-PathChecked (Join-Path $env:USERPROFILE '.cache\ms-playwright') 'Playwright cache'
+}
+
+Write-Host '================================================'
+if ($script:Failures -eq 0) {
+    Write-Ok 'Uninstall complete'
+} else {
+    Write-Fail "Uninstall finished with $($script:Failures) problem(s). See the lines marked [x]."
+}
+Write-Host 'Browser extension: remove it at chrome://extensions, edge://extensions, or whale://extensions.'
+Write-Host '================================================'

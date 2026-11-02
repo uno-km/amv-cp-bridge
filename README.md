@@ -7,7 +7,7 @@
 [English](#english) | 한국어
 
 <p>
-  <img src="https://img.shields.io/badge/v1.0.0-blue?style=flat-square" alt="version">
+  <img src="https://img.shields.io/badge/v1.0.1-blue?style=flat-square" alt="version">
   <img src="https://img.shields.io/badge/Windows%20%7C%20macOS-supported-green?style=flat-square" alt="platform">
   <img src="https://img.shields.io/badge/License-Apache--2.0-blue?style=flat-square" alt="license">
 </p>
@@ -39,13 +39,34 @@ Microsoft 365 Copilot (Enterprise/Edu) 라이선스가 있지만 API가 없어�
 
 - **Microsoft Edge** (Windows 기본 설치 / macOS: `brew install --cask microsoft-edge`)
 - **M365 Copilot 라이선스** (Enterprise 또는 Edu)
-- Edge에서 Copilot에 로그인된 상태 (https://m365.cloud.microsoft/chat)
+
+프로그램은 평소 쓰는 Edge와 분리된 전용 Edge 프로필을 사용합니다. 처음 실행하면 계정이 `연결 확인 전`으로 표시되며, `계정 연결` 버튼을 누르면 Edge 창이 열립니다. Windows 계정으로 Edge가 자동 로그인되면 바로 연결되고, 그렇지 않으면 열린 창에서 Copilot에 로그인하면 됩니다.
+
+---
+
+### 원터치 설치 (권장)
+
+Python이 없어도 됩니다. Python, Microsoft Edge(없는 경우), 필요한 라이브러리, 프로그램을 모두 설치한 뒤 실행합니다.
+
+**Windows** (PowerShell 또는 cmd에 붙여넣기)
+
+```
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/uno-km/amv-cp-bridge/master/scripts/setup_all.ps1 | iex"
+```
+
+**macOS** (터미널에 붙여넣기)
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/uno-km/amv-cp-bridge/master/scripts/setup_all.sh)"
+```
+
+프로그램은 시작할 때 새 버전을 확인합니다. 새 버전이 있으면 `업데이트` 또는 `다음에 하기`를 선택할 수 있고, 설치 후 첫 실행에서 릴리스 노트를 표시합니다.
 
 ---
 
 ### Windows
 
-#### 방법 1: EXE 실행 (가장 간단)
+#### 방법 1: EXE 실행
 
 [Releases](https://github.com/uno-km/amv-cp-bridge/releases)에서 `amv-cp-bridge.exe`를 받아서 더블클릭하면 됩니다.
 네이티브 GUI 창이 열리며 대시보드와 API 서버가 동시에 시작됩니다.
@@ -72,13 +93,7 @@ amv-cp-bridge dashboard
 
 ### macOS
 
-```bash
-# 설치
-bash <(curl -fsSL https://raw.githubusercontent.com/uno-km/amv-cp-bridge/main/scripts/macos/install.sh)
-
-# 실행
-~/.amv_cp_bridge/start.sh
-```
+위 원터치 설치를 실행한 뒤 바탕화면의 `amv-cp-bridge.command` 또는 `~/.amv_cp_bridge/start.sh`로 실행합니다.
 
 또는 직접:
 ```bash
@@ -195,10 +210,11 @@ amv-cp-bridge gateway --port 11500
 
 ### 브라우저 확장프로그램 (Chrome / Whale)
 
-1. `chrome://extensions` 또는 `whale://extensions` 접속
-2. 개발자 모드 ON
-3. "압축해제된 확장 프로그램을 로드합니다" → `extension/` 폴더 선택
-4. 사이드바에서 Ctrl+Shift+Y 또는 우클릭으로 사용
+1. Releases에서 [`amv-cp-bridge-extension.zip`](https://github.com/uno-km/amv-cp-bridge/releases/latest/download/amv-cp-bridge-extension.zip)을 받아 압축을 풉니다
+2. `chrome://extensions`, `edge://extensions`, `whale://extensions` 중 사용하는 브라우저 주소로 접속
+3. 개발자 모드 ON
+4. "압축해제된 확장 프로그램을 로드합니다" → 압축을 푼 폴더 선택
+5. 사이드바에서 Ctrl+Shift+Y 또는 우클릭으로 사용
 
 ### Safari 확장프로그램 (macOS)
 
@@ -294,54 +310,33 @@ amv-cp-bridge/
 
 ## 제거 (Uninstall)
 
-### 원터치 삭제 (Windows)
+### Windows
 
-`scripts/windows/999_uninstall.bat` 을 더블클릭하면 아래 항목을 모두 자동 제거합니다.
+저장소를 내려받지 않아도 됩니다. PowerShell 또는 cmd 어디에 붙여넣어도 동작합니다.
+
+**전체 삭제**
 
 ```
-[v] amv-cp-bridge process(es) terminated
-[v] Port 11500 released
-[v] Orphaned Edge worker processes terminated
-[v] ~/.amv_cp_bridge/ data directory removed
-[v] pip package uninstalled
-[v] MCP config entry removed
-[v] Playwright browser cache removed
-[v] EXE file removed
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/uno-km/amv-cp-bridge/master/scripts/windows/999_uninstall.ps1 | iex"
 ```
 
-또는 PowerShell에서 직접 실행:
+프로그램, 설정, DB, 로그, 전용 Edge 프로필(로그인 정보 포함), PATH 항목, 바탕화면 바로가기, MCP 설정을 제거합니다. 삭제 대상 EXE는 설치 폴더, 실행 중인 위치, `다운로드` 폴더, 바탕화면의 `amv-cp-bridge.exe`입니다. 평소 쓰는 Edge 창과 프로필은 건드리지 않습니다.
 
-```powershell
-# 전체 삭제
-PowerShell -ExecutionPolicy Bypass -File scripts\windows\999_uninstall.ps1
+**EXE만 남기고 삭제**
 
-# Playwright 캐시 유지 (빠른 재설치용)
-PowerShell -ExecutionPolicy Bypass -File scripts\windows\999_uninstall.ps1 -KeepPlaywright
-
-# EXE 파일 유지
-PowerShell -ExecutionPolicy Bypass -File scripts\windows\999_uninstall.ps1 -KeepEXE
+```
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((irm https://raw.githubusercontent.com/uno-km/amv-cp-bridge/master/scripts/windows/999_uninstall.ps1))) -KeepEXE"
 ```
 
-### 수동 삭제 (CMD 단계별)
+설치한 Python과 Microsoft Edge는 다른 프로그램도 사용할 수 있으므로 제거하지 않습니다.
 
-```cmd
-:: 1. 프로세스 종료
-taskkill /F /IM amv-cp-bridge.exe
+### macOS
 
-:: 2. 포트 11500 해제
-for /f "tokens=5" %a in ('netstat -ano -p TCP ^| findstr ":11500"') do taskkill /F /PID %a
-
-:: 3. 설정·DB·로그 삭제
-rmdir /s /q "%USERPROFILE%\.amv_cp_bridge"
-
-:: 4. pip 패키지 제거
-python -m pip uninstall -y amv-cp-bridge
-
-:: 5. EXE 삭제 (직접 다운받은 경우)
-del /f amv-cp-bridge.exe
+```bash
+rm -rf ~/.amv_cp_bridge ~/copilot_profile_default ~/copilot_profile_secondary ~/Desktop/amv-cp-bridge.command
 ```
 
-> **브라우저 확장프로그램**은 `chrome://extensions`에서 직접 제거해야 합니다.
+> **브라우저 확장프로그램**은 `chrome://extensions`, `edge://extensions`, `whale://extensions`에서 직접 제거합니다.
 
 ---
 
@@ -424,19 +419,27 @@ amv-cp-bridge/
 
 ### Quick start
 
-**Windows (EXE — simplest):**
+**One-line install (recommended).** Python is not required. Installs Python, Microsoft Edge (when absent), all libraries, and the application, then starts it.
+
+Windows (PowerShell or cmd):
+```
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/uno-km/amv-cp-bridge/master/scripts/setup_all.ps1 | iex"
+```
+
+macOS (Terminal):
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/uno-km/amv-cp-bridge/master/scripts/setup_all.sh)"
+```
+
+The application checks for a new version at startup and offers `업데이트` (update) or `다음에 하기` (later). Release notes appear on the first launch after an install.
+
+**Windows (EXE):**
 Download `amv-cp-bridge.exe` from [Releases](https://github.com/uno-km/amv-cp-bridge/releases) and double-click.
 
 **Windows (scripts):**
 ```
 scripts/windows/1_install.bat      ← Install Python deps
 scripts/windows/2_dashboard.bat    ← Start dashboard + API server
-```
-
-**macOS:**
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/uno-km/amv-cp-bridge/main/scripts/macos/install.sh)
-~/.amv_cp_bridge/start.sh
 ```
 
 **From source (any platform):**
@@ -451,7 +454,7 @@ amv-cp-bridge dashboard
 
 - Microsoft Edge browser
 - M365 Copilot license (Enterprise or Edu)
-- Signed into Copilot in Edge (https://m365.cloud.microsoft/chat)
+- The application uses a dedicated Edge profile. An account starts as `Not checked`. Select `Connect` to open Edge and sign in to Copilot. Edge may sign in automatically with the Windows account.
 - Python 3.10+ (if not using EXE)
 
 ### API usage
@@ -478,10 +481,11 @@ Claude Desktop (`claude_desktop_config.json`):
 
 ### Browser extension
 
-1. Go to `chrome://extensions`
-2. Enable Developer mode
-3. Click "Load unpacked" → select the `extension/` folder
-4. Use via sidebar (Ctrl+Shift+Y) or right-click context menu
+1. Download [`amv-cp-bridge-extension.zip`](https://github.com/uno-km/amv-cp-bridge/releases/latest/download/amv-cp-bridge-extension.zip) from Releases and extract it
+2. Go to `chrome://extensions`, `edge://extensions`, or `whale://extensions`
+3. Enable Developer mode
+4. Click "Load unpacked" and select the extracted folder
+5. Use via sidebar (Ctrl+Shift+Y) or right-click context menu
 
 ### Safari extension (macOS)
 
@@ -492,23 +496,21 @@ cd extension-safari && bash convert.sh
 
 ### Uninstall
 
-**One-click removal (Windows):**
-Double-click `scripts/windows/999_uninstall.bat`, or run:
+**Windows.** The repository is not required. Paste into PowerShell or cmd:
 
-```powershell
-PowerShell -ExecutionPolicy Bypass -File scripts\windows\999_uninstall.ps1
+```
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/uno-km/amv-cp-bridge/master/scripts/windows/999_uninstall.ps1 | iex"
 ```
 
-This removes: running processes · port 11500 · `~/.amv_cp_bridge/` · pip package · MCP config entry · Playwright cache · EXE.
+This removes the application, settings, database, logs, the dedicated Edge profile including its sign-in, the PATH entry, the desktop shortcut, and the MCP entry. It removes `amv-cp-bridge.exe` from the install folder, its running location, Downloads, and the Desktop. Your regular Edge windows and profile are not changed. Python and Microsoft Edge are kept.
 
-**Manual removal (CMD):**
-```cmd
-taskkill /F /IM amv-cp-bridge.exe
-rmdir /s /q "%USERPROFILE%\.amv_cp_bridge"
-python -m pip uninstall -y amv-cp-bridge
+**macOS:**
+
+```bash
+rm -rf ~/.amv_cp_bridge ~/copilot_profile_default ~/copilot_profile_secondary ~/Desktop/amv-cp-bridge.command
 ```
 
-> Browser extensions must be removed manually via `chrome://extensions`.
+> Remove the browser extension at `chrome://extensions`, `edge://extensions`, or `whale://extensions`.
 
 ### Security
 

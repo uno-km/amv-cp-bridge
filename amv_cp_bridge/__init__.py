@@ -5,9 +5,15 @@ AMEVA Copilot Bridge Package
 Production-grade ephemeral zero-leak bridge and multi-protocol gateway for Microsoft 365 Copilot.
 """
 
-__version__ = "1.0.0"
 __author__ = "Eunho Kim <contact@uno-km.com>"
 
-from .engine import CopilotEngine, CopilotPool, CopilotWorker
+from ._version import __version__
 
 __all__ = ["CopilotEngine", "CopilotPool", "CopilotWorker", "__version__"]
+
+
+def __getattr__(name):
+    if name in ("CopilotEngine", "CopilotPool", "CopilotWorker"):
+        from . import engine
+        return getattr(engine, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

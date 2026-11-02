@@ -9,6 +9,7 @@ Windows / macOS compatible.
 import os
 import sys
 import socket
+import subprocess
 import threading
 import time
 import webbrowser
@@ -16,6 +17,30 @@ import urllib.request
 import urllib.error
 import json
 import http.client
+
+try:
+    from . import updater
+    from ._version import __version__
+except (ImportError, ValueError):
+    from amv_cp_bridge import updater
+    from amv_cp_bridge._version import __version__
+
+
+def close_boot_splash():
+    """EXE 압축 해제 중 표시한 부트 화면을 닫는다. EXE가 아니면 아무 일도 하지 않는다."""
+    try:
+        import pyi_splash
+        pyi_splash.close()
+    except (ImportError, RuntimeError, OSError):
+        pass
+
+
+def _bring_to_front(window):
+    """창을 맨 앞에 표시한다. 다른 창 사용을 막지 않도록 topmost는 잠시만 유지한다."""
+    window.lift()
+    window.attributes("-topmost", True)
+    window.after(400, lambda: window.attributes("-topmost", False))
+    window.focus_force()
 
 
 def _find_icon_path() -> str:
@@ -130,12 +155,12 @@ def _launch_splash(host: str, port: int):
     from tkinter import scrolledtext
 
     actual_port = [port]          # 포트 충돌 시 자동 변경
-    step_logs: list[str] = [""] * 5
+    step_logs: list[str] = [""] * 6
 
     root = tk.Tk()
     root.title("amv-cp-bridge")
 
-    W, H = 500, 530
+    W, H = 500, 600
     sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
     root.geometry(f"{W}x{H}+{(sw - W) // 2}+{(sh - H) // 2}")
     root.resizable(False, False)
@@ -177,7 +202,7 @@ def _launch_splash(host: str, port: int):
     tk.Label(title_col, text="amv-cp-bridge",
              bg=PRIMARY, fg="#ffffff",
              font=("Segoe UI", 15, "bold")).pack(anchor="w")
-    tk.Label(title_col, text="Created by AMV Foundation",
+    tk.Label(title_col, text=f"v{__version__}  ·  Created by AMV Foundation",
              bg=PRIMARY, fg="#a5b4fc",
              font=("Segoe UI", 8)).pack(anchor="w")
 
@@ -197,8 +222,9 @@ def _launch_splash(host: str, port: int):
         "Microsoft Edge 탐색",
         "게이트웨이 서버 기동",
         "API 서버 연결 확인",
+        "업데이트 확인",
     ]
-    PCTS = [0, 20, 40, 60, 80, 100]
+    PCTS = [0, 17, 33, 50, 67, 83, 100]
     SPINNER = ["◐", "◓", "◑", "◒"]
 
     icon_lbls: list = []
@@ -212,7 +238,7 @@ def _launch_splash(host: str, port: int):
         log_frame,
         bg="#0f172a", fg="#94a3b8",
         font=("Consolas", 8), bd=0, wrap="word",
-        height=6,                   # 약 6줄
+        height=11,
         relief="flat",
         insertbackground="#94a3b8",
         selectbackground="#334155",
@@ -242,7 +268,8 @@ def _launch_splash(host: str, port: int):
 
         log_area.configure(state="normal")
         log_area.delete("1.0", "end")
-        content = step_logs[idx] if step_logs[idx] else "(아직 실행되지 않은 단계입니다)"
+        content = step_logs[idx] if step_logs[idx] else (
+            "(진행 중입니다)" if idx == _cur[0] else "(아직 실행되지 않은 단계입니다)")
         for line in content.split("\n"):
             if line.startswith("✓"):
                 log_area.insert("end", line + "\n", "ok")
@@ -325,12 +352,17 @@ def _launch_splash(host: str, port: int):
         _spin_i[0] = 0
         _spinning[0] = True
         desc_lbls[idx].configure(fg="#1e293b")
+        _show_log(idx)
         root.after(0, _spin)
 
     def _finish(idx: int, ok: bool):
         _spinning[0] = False
-        icon_lbls[idx].configure(text="✓" if ok else "✗", fg=GREEN if ok else RED)
-        desc_lbls[idx].configure(fg="#1e293b" if ok else RED)
+        if ok is None:
+            icon_lbls[idx].configure(text="!", fg="#d97706")
+            desc_lbls[idx].configure(fg="#1e293b")
+        else:
+            icon_lbls[idx].configure(text="✓" if ok else "✗", fg=GREEN if ok else RED)
+            desc_lbls[idx].configure(fg="#1e293b" if ok else RED)
         root.after(0, lambda: _refresh_log_if_open(idx))
 
     def _run():
@@ -365,11 +397,9 @@ def _launch_splash(host: str, port: int):
                     for a in accs:
                         lines.append(f"✓ [{a.get('name', '?')}] 포트 {a.get('port')} → {a.get('profile_dir')}")
                 else:
-                    lines.append("⚠ accounts.json이 비어있음 (기본값 자동 생성)")
-                    ok1 = False
+                    lines.append("✓ 계정 구성이 비어 있어 기본 계정 구성을 생성합니다.")
             else:
-                lines.append("⚠ accounts.json 없음 — 첫 실행 시 기본값 자동 생성")
-                ok1 = False
+                lines.append("✓ 첫 실행입니다. 기본 계정 구성을 생성합니다.")
         except Exception as e:
             lines.append(f"✗ 로드 실패: {e}")
             ok1 = False
@@ -455,6 +485,8 @@ def _launch_splash(host: str, port: int):
         lines = ["=== API 서버 연결 확인 ===",
                  f"엔드포인트: {base}/health",
                  "최대 대기: 21초 (60회 × 0.35초)"]
+        step_logs[4] = "\n".join(lines)
+        root.after(0, lambda: _refresh_log_if_open(4))
         ok4 = False
         last_err = ""
         for attempt in range(60):
@@ -492,15 +524,133 @@ def _launch_splash(host: str, port: int):
                 lines.append("server_error.log 없음")
 
         step_logs[4] = "\n".join(lines)
+        root.after(0, lambda v=ok4: [_finish(4, v), _set_pct(PCTS[5])])
+
+        # ── Step 5: 업데이트 확인 ─────────────────────────────────
+        time.sleep(0.05)
+        root.after(0, lambda: _activate(5))
+        try:
+            ok5 = _check_updates()
+        except Exception as exc:
+            _log_update(f"⚠ 업데이트 확인 중 오류: {exc!r}")
+            ok5 = None
         _done[0] = True
-        root.after(0, lambda v=ok4: [_finish(4, v), _set_pct(100)])
-        time.sleep(0.6)
+        root.after(0, lambda v=ok5: [_finish(5, v), _set_pct(100)])
+        time.sleep(0.6 if ok5 else 2.5)
         root.after(0, lambda: _open_main(ok4, actual_port[0]))
+
+    def _log_update(line: str):
+        step_logs[5] = f"{step_logs[5]}\n{line}" if step_logs[5] else line
+        root.after(0, lambda: _refresh_log_if_open(5))
+
+    def _ask_on_ui(title: str, headline: str, notes: str, primary: str, secondary: str = "") -> bool:
+        """UI 스레드에 대화상자를 띄우고 사용자의 선택을 기다린다."""
+        chosen = [False]
+        answered = threading.Event()
+        root.after(0, lambda: _release_dialog(title, headline, notes, primary, secondary, chosen, answered))
+        answered.wait()
+        return chosen[0]
+
+    def _release_dialog(title, headline, notes, primary, secondary, chosen, answered):
+        dlg = tk.Toplevel(root)
+        dlg.title(title)
+        dlg.configure(bg=BG)
+        dlg.transient(root)
+        dw, dh = 460, 420
+        beside = min(root.winfo_rootx() + W + 10, sw - dw - 10)
+        dlg.geometry(f"{dw}x{dh}+{beside}+{root.winfo_rooty()}")
+        dlg.resizable(False, False)
+
+        def close(result: bool):
+            chosen[0] = result
+            dlg.grab_release()
+            dlg.destroy()
+            answered.set()
+
+        tk.Label(dlg, text=headline, bg=BG, fg="#1e293b", font=("Segoe UI", 11, "bold"),
+                 wraplength=dw - 40, justify="left").pack(anchor="w", padx=20, pady=(18, 6))
+        tk.Label(dlg, text="변경 사항", bg=BG, fg=MUTED, font=("Segoe UI", 8)).pack(anchor="w", padx=20)
+
+        btns = tk.Frame(dlg, bg=BG)
+        btns.pack(side="bottom", fill="x", padx=20, pady=14)
+        tk.Button(btns, text=primary, bg=PRIMARY, fg="#ffffff", activebackground="#4f46e5",
+                  activeforeground="#ffffff", relief="flat", padx=16, pady=5,
+                  font=("Segoe UI", 9, "bold"), cursor="hand2",
+                  command=lambda: close(True)).pack(side="right")
+        if secondary:
+            tk.Button(btns, text=secondary, bg=BORDER, fg="#334155", relief="flat", padx=16, pady=5,
+                      font=("Segoe UI", 9), cursor="hand2",
+                      command=lambda: close(False)).pack(side="right", padx=(0, 8))
+
+        box = scrolledtext.ScrolledText(dlg, bg="#f8fafc", fg="#1e293b", font=("Segoe UI", 9),
+                                        bd=0, wrap="word", relief="flat", padx=10, pady=8)
+        box.pack(fill="both", expand=True, padx=20, pady=(4, 0))
+        box.insert("end", updater.format_notes(notes) or "(릴리스 노트가 없습니다)")
+        box.configure(state="disabled")
+
+        dlg.bind("<Return>", lambda e: close(True))
+        dlg.bind("<Escape>", lambda e: close(False))
+        dlg.protocol("WM_DELETE_WINDOW", lambda: close(False))
+        dlg.grab_set()
+        dlg.lift()
+        dlg.focus_force()
+
+    def _check_updates():
+        _log_update("=== 업데이트 확인 ===")
+        _log_update(f"현재 버전: v{__version__}")
+        ok = True
+
+        if updater.needs_release_notes():
+            _log_update(f"v{__version__} 릴리스 노트 조회 중")
+            try:
+                installed = updater.fetch_release_for_version(__version__)
+                _log_update("✓ 릴리스 노트 수신")
+                _ask_on_ui("설치 완료", f"v{__version__} 설치가 완료되었습니다.", installed.notes, "확인")
+                updater.mark_version_seen()
+            except (updater.UpdateError, OSError) as exc:
+                _log_update(f"⚠ 릴리스 노트 조회 실패: {exc}")
+                _log_update(f"  → {updater.RELEASES_PAGE}")
+                ok = None
+
+        _log_update(f"최신 버전 조회: {updater.RELEASES_API}/latest")
+        try:
+            latest = updater.fetch_latest_release()
+        except updater.UpdateError as exc:
+            _log_update(f"⚠ 버전 확인 실패: {exc}")
+            _log_update("  → 현재 버전으로 계속 진행합니다.")
+            return None
+        _log_update(f"최신 버전: v{latest.version}")
+
+        if not updater.is_newer(latest.version, __version__):
+            _log_update("✓ 최신 버전을 사용 중입니다.")
+            return ok
+
+        _log_update(f"⚠ 새 버전 v{latest.version}이 있습니다. 사용자 선택을 기다립니다.")
+        accepted = _ask_on_ui(
+            "업데이트 안내",
+            f"새 버전 v{latest.version}이 있습니다. (현재 v{__version__})\n업데이트하시겠습니까?",
+            latest.notes, "업데이트", "다음에 하기")
+        if not accepted:
+            _log_update("다음에 하기 선택 → 현재 버전으로 계속 진행합니다.")
+            return ok
+
+        _log_update("업데이트 선택 → 재설치 명령을 실행합니다.")
+        try:
+            updater.launch_reinstall()
+        except (updater.UpdateError, OSError, subprocess.SubprocessError) as exc:
+            _log_update(f"✗ 재설치 명령 실행 실패: {exc}")
+            return None
+        _log_update("✓ 재설치 창을 열었습니다. 프로그램을 종료합니다.")
+        time.sleep(0.8)
+        os._exit(0)
 
     def _open_main(server_ok: bool, resolved_port: int):
         root.destroy()
         _launch_main_gui(host, resolved_port, server_ok)
 
+    _bring_to_front(root)
+    root.update()
+    close_boot_splash()
     threading.Thread(target=_run, daemon=True).start()
     root.mainloop()
 
@@ -517,7 +667,8 @@ def _launch_main_gui(host: str, port: int, server_ok: bool = True):
             lbl_today="오늘", lbl_week="이번 주", lbl_month="이번 달", lbl_year="올해",
             tokens="토큰",
             idle="● 대기 중", busy="● 처리 중", connecting="● 연결 중...",
-            worker_idle="가용", worker_busy="작업 중", worker_off="오프라인",
+            worker_busy="작업 중", worker_ok="연결됨", worker_unknown="연결 확인 전", worker_login="로그인 필요",
+            btn_connect="계정 연결",
             btn_purge="🧹 메모리 정리", btn_reset="🗑 통계 초기화",
             btn_open="🌐 브라우저로 열기",
             confirm_purge="Edge 잔여 프로세스를 정리하시겠습니까?",
@@ -532,7 +683,7 @@ def _launch_main_gui(host: str, port: int, server_ok: bool = True):
             ht_2="2. 계정 설정 파일 편집\n   → ~/.amv_cp_bridge/accounts.json",
             ht_3="3. REST API 호출\n   → POST http://localhost:{port}/v1/chat/completions".format(port=port),
             ht_4="4. MCP 서버 (Claude Desktop / Cursor)\n   → amv-cp-bridge serve",
-            ht_5="5. 브라우저 확장프로그램\n   → chrome://extensions → extension/ 폴더 로드",
+            ht_5="5. 브라우저 확장프로그램\n   → Releases에서 amv-cp-bridge-extension.zip 다운로드 후 압축 해제\n   → chrome://extensions → 개발자 모드 → 압축해제된 폴더 로드",
             ht_modes="추론 모드: 자동 / 빠름 / 깊게 / Sol Quick / Sol Deep Thinking",
             ab_desc="M365 Copilot을 로컬 API로 연결하는 브릿지입니다.",
             ab_site="🌐  웹사이트", ab_gh="🐙  GitHub", ab_blog="✍️  블로그", ab_coffee="☕  커피 한 잔",
@@ -544,7 +695,8 @@ def _launch_main_gui(host: str, port: int, server_ok: bool = True):
             lbl_today="Today", lbl_week="This Week", lbl_month="This Month", lbl_year="This Year",
             tokens="tokens",
             idle="● Idle", busy="● Processing", connecting="● Connecting...",
-            worker_idle="Available", worker_busy="Busy", worker_off="Offline",
+            worker_busy="Busy", worker_ok="Connected", worker_unknown="Not checked", worker_login="Sign-in required",
+            btn_connect="Connect",
             btn_purge="🧹 Purge Memory", btn_reset="🗑 Reset Stats",
             btn_open="🌐 Open in Browser",
             confirm_purge="Purge all Edge processes?",
@@ -559,7 +711,7 @@ def _launch_main_gui(host: str, port: int, server_ok: bool = True):
             ht_2="2. Edit account config\n   → ~/.amv_cp_bridge/accounts.json",
             ht_3="3. Call the REST API\n   → POST http://localhost:{port}/v1/chat/completions".format(port=port),
             ht_4="4. MCP Server (Claude Desktop / Cursor)\n   → amv-cp-bridge serve",
-            ht_5="5. Browser Extension\n   → chrome://extensions → load extension/ folder",
+            ht_5="5. Browser Extension\n   → Download amv-cp-bridge-extension.zip from Releases and extract it\n   → chrome://extensions → Developer mode → Load unpacked",
             ht_modes="Modes: Auto / Fast / Deep / Sol Quick / Sol Deep Thinking",
             ab_desc="A bridge that exposes M365 Copilot as a local API.",
             ab_site="🌐  Website", ab_gh="🐙  GitHub", ab_blog="✍️  Blog", ab_coffee="☕  Buy Me a Coffee",
@@ -606,7 +758,7 @@ def _launch_main_gui(host: str, port: int, server_ok: bool = True):
     ctk.CTkLabel(topbar, text="⚡ amv-cp-bridge",
                  font=ctk.CTkFont(family="Pretendard", size=15, weight="bold"),
                  text_color=C["primary"]).pack(side="left", padx=16, pady=10)
-    ctk.CTkLabel(topbar, text="v1.0.0",
+    ctk.CTkLabel(topbar, text=f"v{__version__}",
                  font=ctk.CTkFont(size=11), fg_color=C["primary_lt"],
                  text_color=C["primary"], corner_radius=99,
                  width=50, height=20).pack(side="left", pady=10)
@@ -1144,6 +1296,8 @@ p{{margin:.6em 0}}
             stats = evt.get("stats") or {}
             if st:
                 _apply_update(st, stats)
+        elif etype == "accounts":
+            _update_workers(evt.get("workers") or [])
         elif etype in ("task_queued", "task_start", "task_done"):
             _apply_task_event(evt)
             # stats_dirty면 stats도 같이 옴
@@ -1241,11 +1395,15 @@ p{{margin:.6em 0}}
         for w in ws:
             pw = w.get("port")
             is_busy = w.get("is_busy", False)
-            status_str = w.get("status", "OFFLINE_0MB")
-            s = T("worker_busy") if is_busy else (
-                T("worker_idle") if status_str in ("OFFLINE_0MB", "IDLE") else T("worker_off"))
-            col = C["primary"] if is_busy else (
-                C["green"] if status_str in ("OFFLINE_0MB", "IDLE") else C["muted"])
+            login_state = w.get("login_state", "unknown")
+            if is_busy:
+                s, col = T("worker_busy"), C["primary"]
+            elif login_state == "ok":
+                s, col = T("worker_ok"), C["green"]
+            elif login_state == "required":
+                s, col = T("worker_login"), C["red"]
+            else:
+                s, col = T("worker_unknown"), C["muted"]
             name_text = f"  {w.get('name', '')}  :{pw}"
             if pw not in worker_widgets:
                 f = ctk.CTkFrame(workers_container, fg_color=C["bg"],
@@ -1254,13 +1412,34 @@ p{{margin:.6em 0}}
                 nl = ctk.CTkLabel(f, text=name_text,
                                   font=ctk.CTkFont(size=11, weight="bold"), text_color=C["text"])
                 nl.pack(side="left", padx=8, pady=6)
+                cb = ctk.CTkButton(f, text=T("btn_connect"), width=70, height=24,
+                                   fg_color=C["primary"], hover_color="#4f46e5", corner_radius=6,
+                                   font=ctk.CTkFont(size=10, weight="bold"),
+                                   command=lambda p=pw: _connect_account(p))
                 sl = ctk.CTkLabel(f, text=s, font=ctk.CTkFont(size=10, weight="bold"),
                                   text_color=col)
                 sl.pack(side="right", padx=10)
-                worker_widgets[pw] = {"name_lbl": nl, "status_lbl": sl}
+                worker_widgets[pw] = {"name_lbl": nl, "status_lbl": sl, "connect_btn": cb}
             else:
                 worker_widgets[pw]["name_lbl"].configure(text=name_text)
                 worker_widgets[pw]["status_lbl"].configure(text=s, text_color=col)
+            btn = worker_widgets[pw]["connect_btn"]
+            if login_state == "ok" or is_busy:
+                btn.pack_forget()
+            elif not btn.winfo_ismapped():
+                btn.pack(side="right", padx=(0, 2), pady=4)
+
+    def _connect_account(account_port: int):
+        from tkinter import messagebox
+
+        def request_login():
+            try:
+                urllib.request.urlopen(
+                    urllib.request.Request(f"{BASE}/api/accounts/{account_port}/login", method="POST"), timeout=5)
+            except Exception as exc:
+                app_root.after(0, lambda e=exc: messagebox.showerror(T("btn_connect"), str(e)))
+
+        threading.Thread(target=request_login, daemon=True).start()
 
     def _apply_stats(stats):
         for key, (lbl, val, sub) in stat_refs.items():
@@ -1384,6 +1563,7 @@ p{{margin:.6em 0}}
     app_root.protocol("WM_DELETE_WINDOW", _on_close)
     sse_thread = threading.Thread(target=_sse_reader, daemon=True)
     sse_thread.start()
+    _bring_to_front(app_root)
     app_root.mainloop()
 
 

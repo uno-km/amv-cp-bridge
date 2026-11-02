@@ -10,6 +10,8 @@ Microsoft 365 Copilot (Enterprise / Edu) CDP 기반 듀얼 워커 풀 및 무누
 
 import sys
 import os
+import re
+import json
 import time
 import uuid
 import asyncio
@@ -25,6 +27,24 @@ except (ImportError, ValueError):
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 
 COPILOT_URL = "https://m365.cloud.microsoft/chat"
+COMPOSER_SELECTOR = "[contenteditable='true'], .fai-EditorInput__input, textarea, [role='textbox']:not([aria-readonly='true'])"
+ARTICLE_SELECTOR = 'div[role="article"], .fai-CopilotMessage'
+LOGIN_HOSTS = ("login.microsoftonline.com", "login.live.com", "login.microsoft.com")
+COMPOSER_TIMEOUT_SEC = 45
+SEND_TIMEOUT_SEC = 60
+LOGIN_TIMEOUT_SEC = 300
+
+
+class CopilotLoginRequired(RuntimeError):
+    """The account profile is not signed in to Microsoft 365 Copilot."""
+
+
+def _is_login_url(url: str) -> bool:
+    return any(host in url.lower() for host in LOGIN_HOSTS)
+
+
+def _normalize_composer_text(text: str) -> str:
+    return re.sub(r"[\s​‌‍﻿]+", "", text or "")
 
 
 class EventBus:
@@ -89,6 +109,11 @@ class CopilotWorker:
         self.context: Optional[BrowserContext] = None
         self.page: Optional[Page] = None
         self._lock = asyncio.Lock()
+        self.login_state: str = _read_login_states().get(str(port), "unknown")
+
+    def _set_login_state(self, state: str):
+        self.login_state = state
+        _write_login_state(self.port, state)
 
     def get_listening_pids(self) -> List[int]:
         """해당 디버깅 포트에 바인딩된 Edge 브라우저 PID를 탐색 (10초 캐시)"""
@@ -144,22 +169,23 @@ class CopilotWorker:
     def is_busy(self) -> bool:
         return self._lock.locked()
 
-    async def ensure_running(self):
+    async def ensure_running(self, visible: bool = False):
         """엣지 브라우저가 꺼져있으면 디버깅 모드로 자동 기동"""
         if self.is_alive():
             return True
 
         print(f"[!] [{self.name}] 포트 {self.port} 세션 기동 중...")
         edge_path = _find_edge_binary()
-        subprocess.Popen([
+        args = [
             edge_path,
             f"--remote-debugging-port={int(self.port)}",
             f"--user-data-dir={self.profile_dir}",
             "--no-first-run",
             "--no-default-browser-check",
-            "--window-position=-3000,-3000",  # 모니터 밖으로 던져 화면 노출 방지
-            COPILOT_URL
-        ])
+        ]
+        if not visible:
+            args.append("--window-position=-3000,-3000")  # 모니터 밖으로 던져 화면 노출 방지
+        subprocess.Popen(args + [COPILOT_URL])
 
         for _ in range(25):
             await asyncio.sleep(0.4)
@@ -181,7 +207,7 @@ class CopilotWorker:
         target_page = None
         for p in self.context.pages:
             url = p.url.lower()
-            if "m365.cloud.microsoft" in url or "copilot.microsoft" in url:
+            if "m365.cloud.microsoft" in url or "copilot.microsoft" in url or _is_login_url(url):
                 target_page = p
                 break
 
@@ -226,7 +252,10 @@ class CopilotWorker:
 
     def kill_browser_process(self):
         """포트에 바인딩된 Edge 브라우저 프로세스 트리 전체를 완전 강제 종료"""
+        self.__dict__.pop("_pids_cache_time", None)
+        self.__dict__.pop("_alive_cache_time", None)
         pids = self.get_listening_pids()
+        self.__dict__.pop("_pids_cache_time", None)
         for pid in pids:
             try:
                 if sys.platform == "darwin":
@@ -253,7 +282,7 @@ class CopilotWorker:
             "복사", "공유", "좋아요", "싫어요", "새로 고침", "편집",
             "준비 중입니다…", "준비 중입니다...", "생각 중…", "생각 중...",
             "잠시만 기다려 주세요…", "잠시만 기다려 주세요...", "살펴보는 중...", "살펴보는 중…",
-            "자세히 살펴보는 중…", "자세히 살펴보는 중..."
+            "자세히 살펴보는 중…", "자세히 살펴보는 중...", "작업 중...", "작업 중…"
         }
         for p in skip_phrases:
             text = text.replace(p, "")
@@ -304,34 +333,93 @@ class CopilotWorker:
         await self.ensure_model_selected(page)
         return True
 
+    async def _wait_for_composer(self, page: Page, timeout: float = COMPOSER_TIMEOUT_SEC) -> bool:
+        """로그인 리다이렉트가 끝나고 Copilot 입력창이 보일 때까지 대기한다."""
+        deadline = time.time() + timeout
+        textbox = page.locator(COMPOSER_SELECTOR).first
+        while time.time() < deadline:
+            if not _is_login_url(page.url) and await textbox.is_visible():
+                return True
+            await asyncio.sleep(0.5)
+        return False
+
+    async def _submit_prompt(self, page: Page, prompt: str):
+        """프롬프트를 입력하고, 메시지가 실제로 전송될 때까지 재시도한다.
+
+        Copilot은 서버 렌더링된 입력창을 먼저 표시하므로, 페이지가 동작하기 전의
+        입력과 Enter는 오류 없이 무시된다. 전송 여부는 메시지 생성 또는 대화 URL로 판정한다.
+        """
+        textbox = page.locator(COMPOSER_SELECTOR).first
+        expected = _normalize_composer_text(prompt)
+        articles = page.locator(ARTICLE_SELECTOR)
+        baseline = await articles.count()
+        url_before = page.url
+
+        async def was_sent(wait_seconds: float) -> bool:
+            deadline = time.time() + wait_seconds
+            while time.time() < deadline:
+                if await articles.count() > baseline:
+                    return True
+                if page.url != url_before and "/conversation/" in page.url:
+                    return True
+                await asyncio.sleep(0.25)
+            return False
+
+        async def composer_text() -> str:
+            raw = await textbox.evaluate("e => e.innerText ?? e.value ?? ''")
+            return _normalize_composer_text(raw)
+
+        deadline = time.time() + SEND_TIMEOUT_SEC
+        while time.time() < deadline:
+            await textbox.click()
+            if await composer_text() != expected:
+                await page.keyboard.press("Control+A")
+                await page.keyboard.press("Delete")
+                await page.keyboard.insert_text(prompt)
+                await asyncio.sleep(0.3)
+            await page.keyboard.press("Enter")
+            if await was_sent(4.0):
+                return
+            if not await composer_text() and await was_sent(10.0):
+                return
+        raise RuntimeError(f"Copilot 메시지 전송 실패: {SEND_TIMEOUT_SEC}초 안에 전송이 확인되지 않았습니다. (URL: {page.url[:120]})")
+
+    async def open_login(self, timeout: float = LOGIN_TIMEOUT_SEC) -> bool:
+        """로그인할 수 있도록 Edge 창을 화면에 띄우고, 입력창이 보이면 연결 완료로 기록한다."""
+        async with self._lock:
+            try:
+                self.kill_browser_process()
+                await self.ensure_running(visible=True)
+                page = await self.connect()
+                connected = await self._wait_for_composer(page, timeout)
+                self._set_login_state("ok" if connected else "required")
+                return connected
+            except Exception as exc:
+                print(f"[!] [{self.name}] 계정 연결 실패: {type(exc).__name__}: {exc}")
+                self._set_login_state("required")
+                return False
+            finally:
+                await self.cleanup()
+                self.kill_browser_process()
+
     async def stream_query(self, prompt: str, reset_chat: bool = True) -> AsyncGenerator[str, None]:
         """질문을 던지고 실시간 스트리밍 텍스트 델타를 yield"""
         async with self._lock:
             try:
                 page = await self.connect()
 
+                if not await self._wait_for_composer(page):
+                    self._set_login_state("required")
+                    raise CopilotLoginRequired(
+                        f"[{self.name}] Copilot 입력창을 {COMPOSER_TIMEOUT_SEC}초 안에 찾지 못했습니다. "
+                        f"프로그램에서 계정 연결을 진행하십시오. (URL: {page.url[:120]})"
+                    )
+
                 if reset_chat:
                     await self.new_chat()
 
-                textbox = page.locator("[contenteditable='true'], .fai-EditorInput__input, textarea, [role='textbox']:not([aria-readonly='true'])").first
-                await textbox.wait_for(state="visible", timeout=15000)
-                await textbox.click()
-                await asyncio.sleep(0.3)
-                try:
-                    await page.keyboard.insert_text(prompt)
-                except Exception:
-                    await textbox.fill(prompt)
-                await asyncio.sleep(0.3)
-                await page.keyboard.press("Enter")
-
-                start_wait = time.time()
-                while time.time() - start_wait < 15:
-                    has_msg = await page.evaluate("""() => {
-                        return document.querySelectorAll('div[role="article"], .fai-CopilotMessage').length > 0;
-                    }""")
-                    if has_msg:
-                        break
-                    await asyncio.sleep(0.5)
+                await self._submit_prompt(page, prompt)
+                self._set_login_state("ok")
 
                 emitted_text = ""
                 stable_count = 0
@@ -340,7 +428,8 @@ class CopilotWorker:
 
                 while time.time() - start_gen < timeout:
                     info = await page.evaluate("""() => {
-                        const articles = Array.from(document.querySelectorAll('div[role="article"], .fai-CopilotMessage'));
+                        const articles = Array.from(document.querySelectorAll('div[role="article"], .fai-CopilotMessage'))
+                            .filter(a => !a.classList.contains('fai-UserMessage') && !(a.innerText || '').startsWith('You said'));
                         if (articles.length === 0) return { text: "", isDone: false };
                         const last = articles[articles.length - 1];
                         const copyBtn = last.querySelector('button[aria-label*="복사"], button[title*="복사"], button[aria-label*="Copy"]');
@@ -379,6 +468,9 @@ class CopilotWorker:
 
                     await asyncio.sleep(0.5)
 
+                if not emitted_text:
+                    raise TimeoutError(f"Copilot 응답 없음: 메시지 전송 후 {timeout}초 안에 응답을 받지 못했습니다.")
+
             finally:
                 if self.ephemeral_mode:
                     await self.cleanup()
@@ -397,24 +489,47 @@ class CopilotWorker:
 
 CONFIG_DIR = os.path.join(str(Path.home()), ".amv_cp_bridge")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "accounts.json")
+LOGIN_STATE_PATH = os.path.join(CONFIG_DIR, "account_state.json")
+
+
+def _read_login_states() -> Dict[str, str]:
+    if not os.path.isfile(LOGIN_STATE_PATH):
+        return {}
+    try:
+        with open(LOGIN_STATE_PATH, "r", encoding="utf-8") as f:
+            states = json.load(f)
+    except (OSError, ValueError) as exc:
+        print(f"[!] account_state.json 읽기 실패: {exc}")
+        return {}
+    return states if isinstance(states, dict) else {}
+
+
+def _write_login_state(port: int, state: str):
+    states = _read_login_states()
+    states[str(port)] = state
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    with open(LOGIN_STATE_PATH, "w", encoding="utf-8") as f:
+        json.dump(states, f)
+
 
 def _load_accounts() -> List[Dict[str, Any]]:
-    """설정 파일에서 계정 목록 로드. 없으면 기본 계정으로 초기화."""
+    """설정 파일에서 계정 목록 로드. 없으면 기본 계정 1개로 초기화."""
+    home = str(Path.home())
     defaults = [
-        {"port": 9333, "name": "기본 계정", "profile_dir": os.path.join(str(Path.home()), "copilot_profile_default")},
-        {"port": 9334, "name": "보조 계정", "profile_dir": os.path.join(str(Path.home()), "copilot_profile_secondary")},
+        {"port": 9333, "name": "기본 계정", "profile_dir": os.path.join(home, "copilot_profile_default")},
+    ]
+    legacy_defaults = defaults + [
+        {"port": 9334, "name": "보조 계정", "profile_dir": os.path.join(home, "copilot_profile_secondary")},
     ]
     if os.path.isfile(CONFIG_PATH):
         try:
-            import json
             with open(CONFIG_PATH, "r", encoding="utf-8") as f:
                 loaded = json.load(f)
-            if isinstance(loaded, list) and len(loaded) > 0:
+            if isinstance(loaded, list) and len(loaded) > 0 and loaded != legacy_defaults:
                 return loaded
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"[!] accounts.json 읽기 실패, 기본값으로 재생성합니다: {exc}")
     os.makedirs(CONFIG_DIR, exist_ok=True)
-    import json
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(defaults, f, ensure_ascii=False, indent=2)
     return defaults
@@ -468,6 +583,7 @@ class CopilotPool:
                 "status": st,
                 "is_busy": busy,
                 "is_alive": alive,
+                "login_state": w.login_state,
                 "pids": pids,
                 "memory_mb": 0 if not alive else (len(pids) * 35) # 추정치
             })
@@ -505,6 +621,22 @@ class CopilotPool:
                     return w
             await asyncio.sleep(0.3)
 
+    def _worker_brief(self) -> List[Dict[str, Any]]:
+        return [{"name": w.name, "port": w.port, "is_busy": w.is_busy(),
+                 "login_state": w.login_state} for w in self.workers]
+
+    async def open_login(self, port: int) -> bool:
+        worker = next((w for w in self.workers if w.port == port), None)
+        if worker is None:
+            raise ValueError(f"등록되지 않은 계정 포트입니다: {port}")
+        login_task = asyncio.ensure_future(worker.open_login())
+        await asyncio.sleep(0)
+        self._push({"type": "accounts", "workers": self._worker_brief()})
+        try:
+            return await login_task
+        finally:
+            self._push({"type": "accounts", "workers": self._worker_brief()})
+
     def _push(self, event: dict):
         """이벤트 발행 (동기 컨텍스트에서도 안전하게 호출)."""
         event_bus.publish(event)
@@ -541,8 +673,7 @@ class CopilotPool:
                 task_entry["worker"] = f"{worker.name}:{worker.port}"
                 self._push({"type": "task_start", "task": dict(task_entry),
                             "active": self.active_count,
-                            "workers": [{"name": w.name, "port": w.port,
-                                         "is_busy": w.is_busy()} for w in self.workers]})
+                            "workers": self._worker_brief()})
 
                 collected_bytes = 0
                 collected_chunks: list = []
@@ -564,7 +695,7 @@ class CopilotPool:
                                        "tokens": tokens_est})
                     self._push({"type": "task_done", "task": dict(task_entry),
                                 "active": max(0, self.active_count - 1),
-                                "stats_dirty": True})
+                                "stats_dirty": True, "workers": self._worker_brief()})
                     try:
                         telemetry_db.record_query(
                             prompt=prompt, duration_ms=duration_ms,
@@ -617,8 +748,7 @@ class CopilotPool:
                 task_entry["worker"] = f"{worker.name}:{worker.port}"
                 self._push({"type": "task_start", "task": dict(task_entry),
                             "active": self.active_count,
-                            "workers": [{"name": w.name, "port": w.port,
-                                         "is_busy": w.is_busy()} for w in self.workers]})
+                            "workers": self._worker_brief()})
                 success = True
                 res = ""
                 try:
@@ -637,7 +767,7 @@ class CopilotPool:
                                        "tokens": tokens_est})
                     self._push({"type": "task_done", "task": dict(task_entry),
                                 "active": max(0, self.active_count - 1),
-                                "stats_dirty": True})
+                                "stats_dirty": True, "workers": self._worker_brief()})
                     try:
                         telemetry_db.record_query(
                             prompt=prompt, duration_ms=duration_ms,

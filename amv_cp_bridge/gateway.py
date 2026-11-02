@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 
 from collections import defaultdict
 
+from ._version import __version__
 from .engine import CopilotEngine, event_bus
 from .telemetry_db import telemetry_db
 
@@ -52,7 +53,7 @@ _rate_limiter = _RateLimiter()
 
 app = FastAPI(
     title="amv-cp-bridge OpenAI Gateway & Dashboard",
-    version="1.0.0",
+    version=__version__,
     description="Universal M365 Copilot AI Bridge with Zero-Leak Lifecycle & Real-Time Telemetry"
 )
 
@@ -158,7 +159,7 @@ async def health_check():
     return {
         "status": "healthy",
         "gateway": "amv-cp-bridge",
-        "version": "1.0.0",
+        "version": __version__,
         "pool_status": engine.get_status_summary(),
         "timestamp": time.time()
     }
@@ -209,6 +210,17 @@ async def api_purge():
     for w in engine.workers:
         w.kill_browser_process()
     return {"ok": True, "message": "모든 Edge 프로세스가 강제 소각되어 0MB로 회수되었습니다."}
+
+@app.post("/api/accounts/{port}/login", status_code=202)
+async def api_account_login(port: int):
+    """계정 로그인 창을 띄우고 연결 상태를 확인한다. 결과는 SSE accounts 이벤트로 전달된다."""
+    worker = next((w for w in engine.workers if w.port == port), None)
+    if worker is None:
+        raise HTTPException(status_code=404, detail=f"등록되지 않은 계정 포트입니다: {port}")
+    if worker.is_busy():
+        raise HTTPException(status_code=409, detail=f"{worker.name} 계정이 사용 중입니다.")
+    asyncio.create_task(engine.open_login(port))
+    return {"ok": True, "port": port}
 
 @app.get("/v1/models")
 async def list_models():
@@ -524,7 +536,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <div class="logo-area">
       <span class="logo-icon">⚡</span>
       <span class="logo-name">amv-cp-bridge</span>
-      <span class="logo-ver">v1.0.0</span>
+      <span class="logo-ver">v__APP_VERSION__</span>
     </div>
     <div class="topbar-right">
       <div class="live-badge" id="liveBadge">
@@ -674,7 +686,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <div class="how-h">🖥️ <span data-i="ht_ext">브라우저 확장프로그램</span></div>
           <div class="how-step"><div class="step-num">1</div><div class="step-body"><div class="step-desc" data-i="ht_ext1"><code>chrome://extensions</code> 또는 <code>whale://extensions</code> 접속</div></div></div>
           <div class="how-step"><div class="step-num">2</div><div class="step-body"><div class="step-desc" data-i="ht_ext2">개발자 모드 ON → "압축해제된 확장 프로그램을 로드합니다" 클릭</div></div></div>
-          <div class="how-step"><div class="step-num">3</div><div class="step-body"><div class="step-desc" data-i="ht_ext3"><code>extension/</code> 폴더 선택 → <kbd>Ctrl+Shift+Y</kbd> 로 사이드바 열기</div></div></div>
+          <div class="how-step"><div class="step-num">3</div><div class="step-body"><div class="step-desc" data-i="ht_ext3">Releases의 <code>amv-cp-bridge-extension.zip</code> 압축 해제 폴더 선택 → <kbd>Ctrl+Shift+Y</kbd> 로 사이드바 열기</div></div></div>
         </div>
 
         <div class="how-section">
@@ -743,7 +755,7 @@ const L = {
     setup_title:"설치 상태", chart_title:"최근 14일 사용량", history_title:"최근 사용 기록 (20건)",
     th_time:"시간", th_prompt:"프롬프트", th_tokens:"토큰", th_latency:"지연", th_source:"소스", th_result:"결과",
     no_data:"기록 없음", purge_btn:"메모리 정리", reset_btn:"통계 초기화",
-    busy:"작업 중", idle:"가용", offline:"오프라인",
+    busy:"작업 중", acct_ok:"연결됨", acct_unknown:"연결 확인 전", acct_required:"로그인 필요",
     s_gw:"게이트웨이", s_ext:"브라우저 확장프로그램", s_mcp:"MCP 서버", s_db:"텔레메트리 DB",
     installed:"✅ 실행 중", unknown:"설치 안내",
     confirm_purge:"Edge 잔여 프로세스를 정리하시겠습니까?", confirm_reset:"모든 사용 기록을 삭제하시겠습니까?",
@@ -758,7 +770,7 @@ const L = {
     ht_ext:"브라우저 확장프로그램",
     ht_ext1:"chrome://extensions 또는 whale://extensions 접속",
     ht_ext2:"개발자 모드 ON → 압축해제된 확장 프로그램을 로드합니다 클릭",
-    ht_ext3:"extension/ 폴더 선택 → Ctrl+Shift+Y 로 사이드바 열기",
+    ht_ext3:"Releases의 amv-cp-bridge-extension.zip 압축 해제 폴더 선택 → Ctrl+Shift+Y 로 사이드바 열기",
     ht_mac:"macOS 설치",
     about_desc:"amv-cp-bridge를 만들고 있습니다. 피드백이나 커피 한 잔은 언제나 환영합니다 ☕",
     lk_site:"웹사이트", lk_blog:"블로그", lk_coffee:"커피 한 잔",
@@ -773,7 +785,7 @@ const L = {
     setup_title:"Installation Status", chart_title:"Usage (Last 14 Days)", history_title:"Recent Activity (20)",
     th_time:"Time", th_prompt:"Prompt", th_tokens:"Tokens", th_latency:"Latency", th_source:"Source", th_result:"Result",
     no_data:"No records", purge_btn:"Purge Memory", reset_btn:"Reset Stats",
-    busy:"Busy", idle:"Available", offline:"Offline",
+    busy:"Busy", acct_ok:"Connected", acct_unknown:"Not checked", acct_required:"Sign-in required",
     s_gw:"Gateway", s_ext:"Browser Extension", s_mcp:"MCP Server", s_db:"Telemetry DB",
     installed:"✅ Running", unknown:"Setup Guide",
     confirm_purge:"Purge all Edge processes?", confirm_reset:"Delete all usage records?",
@@ -788,7 +800,7 @@ const L = {
     ht_ext:"Browser Extension",
     ht_ext1:"Go to chrome://extensions or whale://extensions",
     ht_ext2:"Enable Developer Mode → Click Load unpacked",
-    ht_ext3:"Select the extension/ folder → Press Ctrl+Shift+Y to open sidebar",
+    ht_ext3:"Select the folder extracted from amv-cp-bridge-extension.zip in Releases → Press Ctrl+Shift+Y to open sidebar",
     ht_mac:"macOS Install",
     about_desc:"Building amv-cp-bridge. Feedback and coffee are always welcome ☕",
     lk_site:"Website", lk_blog:"Blog", lk_coffee:"Buy Me a Coffee",
@@ -898,8 +910,8 @@ async function updateDashboard(){
     if(st.workers){
       document.getElementById('workerSummary').textContent=st.total_accounts+' accts';
       document.getElementById('workersList').innerHTML=st.workers.map(w=>{
-        const cls=w.is_busy?'b-busy':(w.status==='OFFLINE_0MB'?'b-idle':'b-off');
-        const txt=w.is_busy?t('busy'):(w.status==='OFFLINE_0MB'?t('idle'):t('offline'));
+        const cls=w.is_busy?'b-busy':(w.login_state==='ok'?'b-idle':'b-off');
+        const txt=w.is_busy?t('busy'):t(w.login_state==='ok'?'acct_ok':(w.login_state==='required'?'acct_required':'acct_unknown'));
         return `<div class="wi"><div><div class="wn">${esc(w.name)}</div><div class="ws">port ${w.port}</div></div><span class="wb ${cls}">${txt}</span></div>`;
       }).join('');
     }
@@ -978,4 +990,4 @@ updateDashboard();
 
 @app.get("/dashboard", response_class=HTMLResponse)
 async def get_dashboard():
-    return DASHBOARD_HTML
+    return DASHBOARD_HTML.replace("__APP_VERSION__", __version__)

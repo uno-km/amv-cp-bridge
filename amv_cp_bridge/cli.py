@@ -19,15 +19,10 @@ try:
 except Exception:
     pass
 
-try:
-    from .engine import CopilotEngine
-    from .telemetry_db import telemetry_db
-except (ImportError, ValueError):
-    from amv_cp_bridge.engine import CopilotEngine
-    from amv_cp_bridge.telemetry_db import telemetry_db
-
 def cmd_status(args):
     """현재 워커 풀 상태 및 텔레메트리 사용량 점검"""
+    from amv_cp_bridge.engine import CopilotEngine
+    from amv_cp_bridge.telemetry_db import telemetry_db
     engine = CopilotEngine()
     print("=" * 65)
     print("⚡ amv-cp-bridge | Sovereign Worker Pool & Telemetry Status")
@@ -55,6 +50,7 @@ def cmd_status(args):
 
 def cmd_purge(args):
     """디버깅 포트에 잔존하는 모든 Edge 프로세스 강제 일괄 소각"""
+    from amv_cp_bridge.engine import CopilotEngine
     engine = CopilotEngine()
     print("[*] 포트 9333 / 9334 잔존 브라우저 프로세스 강제 정리 시작...")
     killed_count = 0
@@ -74,6 +70,7 @@ def cmd_purge(args):
 
 def cmd_reset(args):
     """로컬 텔레메트리 DB 통계 전량 삭제 초기화"""
+    from amv_cp_bridge.telemetry_db import telemetry_db
     confirm = input("[!] 로컬 SQLite 텔레메트리 DB의 모든 사용 기록을 초기화하시겠습니까? (y/N): ")
     if confirm.lower() == 'y':
         telemetry_db.reset_all()
@@ -95,6 +92,7 @@ def cmd_ask(args):
     print("-" * 65)
 
     async def _run():
+        from amv_cp_bridge.engine import CopilotEngine
         engine = CopilotEngine()
         async for chunk in engine.stream_query(prompt):
             sys.stdout.write(chunk)
@@ -153,6 +151,85 @@ def cmd_serve(args):
         from amv_cp_bridge.mcp_server import mcp
     mcp.run(transport="stdio")
 
+def cmd_selftest(args):
+    """패키징 산출물 무결성 점검 (빌드 파이프라인 전용). 결과를 JSON 파일로 기록한다."""
+    import importlib
+    import json
+    import traceback
+
+    checks = {}
+
+    def check(name, fn):
+        try:
+            value = fn()
+            checks[name] = {"ok": True, "detail": str(value) if value is not None else ""}
+        except BaseException:
+            checks[name] = {"ok": False, "detail": traceback.format_exc()}
+
+    for module in ("customtkinter", "PIL.Image", "pystray", "tkinterweb", "markdown2", "certifi",
+                   "uvicorn", "fastapi", "mcp", "amv_cp_bridge.gui", "amv_cp_bridge.gateway",
+                   "amv_cp_bridge.mcp_server", "amv_cp_bridge.updater"):
+        check(f"import:{module}", lambda m=module: importlib.import_module(m) and None)
+
+    def tk_widgets():
+        import tkinter as tk
+        import customtkinter
+        from tkinterweb import HtmlFrame
+        root = tk.Tk()
+        root.withdraw()
+        customtkinter.CTkLabel(root, text="selftest")
+        frame = HtmlFrame(root, messages_enabled=False)
+        frame.load_html("<p>selftest</p>")
+        root.update()
+        root.destroy()
+    check("tk:widgets", tk_widgets)
+
+    async def edge_over_cdp():
+        import socket
+        import tempfile
+        from playwright.async_api import async_playwright
+        from amv_cp_bridge.gui import _find_edge
+
+        found, edge_path = _find_edge()
+        if not found:
+            raise RuntimeError("Microsoft Edge not found")
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as profile:
+            edge = subprocess.Popen([edge_path, f"--remote-debugging-port={port}", f"--user-data-dir={profile}",
+                                     "--headless=new", "--no-first-run", "--no-default-browser-check"])
+            try:
+                async with async_playwright() as pw:
+                    last_error = None
+                    for _ in range(40):
+                        try:
+                            browser = await pw.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
+                            break
+                        except Exception as exc:
+                            last_error = exc
+                            await asyncio.sleep(0.5)
+                    else:
+                        raise RuntimeError(f"CDP connection failed: {last_error}")
+                    context = browser.contexts[0] if browser.contexts else await browser.new_context()
+                    page = await context.new_page()
+                    await page.goto("data:text/html,<title>selftest</title>")
+                    title = await page.title()
+                    version = browser.version
+                    await browser.close()
+                    if title != "selftest":
+                        raise RuntimeError(f"unexpected page title: {title!r}")
+                    return version
+            finally:
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(edge.pid)], capture_output=True)
+                edge.wait(timeout=15)
+    check("playwright:edge_cdp", lambda: asyncio.run(edge_over_cdp()))
+
+    ok = all(item["ok"] for item in checks.values())
+    with open(args.out, "w", encoding="utf-8") as report:
+        json.dump({"ok": ok, "checks": checks}, report, ensure_ascii=False, indent=2)
+    sys.exit(0 if ok else 1)
+
 def main():
     import multiprocessing
     multiprocessing.freeze_support()
@@ -196,9 +273,19 @@ def main():
     # serve
     p_serve = subparsers.add_parser("serve", help="FastMCP 서버 구동 (Cursor, Claude, Antigravity)")
 
+    # selftest (build pipeline only)
+    p_selftest = subparsers.add_parser("selftest")
+    p_selftest.add_argument("--out", required=True)
+
     args = parser.parse_args()
 
-    if args.command == "dashboard":
+    if args.command:
+        from amv_cp_bridge.gui import close_boot_splash
+        close_boot_splash()
+
+    if args.command == "selftest":
+        cmd_selftest(args)
+    elif args.command == "dashboard":
         cmd_dashboard(args)
     elif args.command == "status":
         cmd_status(args)
