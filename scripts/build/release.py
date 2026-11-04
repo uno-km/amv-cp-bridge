@@ -127,7 +127,10 @@ def main() -> None:
         raise SystemExit(f"[release] {EXTENSION_ZIP} is missing from the published release")
 
     print(f"[release] Published {published['html_url']}")
-    print(notes)
+    try:
+        print(notes)
+    except UnicodeEncodeError:
+        print(notes.encode("utf-8", errors="replace").decode("utf-8", errors="replace"))
 
 
 if __name__ == "__main__":
