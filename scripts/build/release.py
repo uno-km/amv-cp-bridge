@@ -93,15 +93,16 @@ def build_extension_zip() -> Path:
 
 
 def main() -> None:
+    skip_build = "--skip-build" in sys.argv
     version = read_version()
     tag = f"v{version}"
     section = changelog_section(version)
     head = check_preconditions(version)
     previous_tag, previous_bytes = previous_exe_bytes()
 
-    subprocess.run([sys.executable, str(ROOT / "scripts" / "build" / "build_exe.py")], check=True, cwd=ROOT)
-
-    subprocess.run([sys.executable, str(ROOT / "scripts" / "build" / "regression_check.py")], check=True, cwd=ROOT)
+    if not skip_build:
+        subprocess.run([sys.executable, str(ROOT / "scripts" / "build" / "build_exe.py")], check=True, cwd=ROOT)
+        subprocess.run([sys.executable, str(ROOT / "scripts" / "build" / "regression_check.py")], check=True, cwd=ROOT)
 
     report = json.loads((ROOT / "dist" / "build_report.json").read_text(encoding="utf-8"))
     if report["version"] != version:
