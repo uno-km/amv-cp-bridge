@@ -22,8 +22,8 @@ binaries = []
 hiddenimports = [
     "tkinter", "tkinter.ttk", "tkinter.messagebox", "tkinter.scrolledtext", "sqlite3",
     "amv_cp_bridge", "amv_cp_bridge._version", "amv_cp_bridge.updater",
-    "amv_cp_bridge.telemetry_db", "amv_cp_bridge.engine", "amv_cp_bridge.gateway",
-    "amv_cp_bridge.mcp_server", "amv_cp_bridge.gui", "markdown2",
+    "amv_cp_bridge.settings", "amv_cp_bridge.telemetry_db", "amv_cp_bridge.engine",
+    "amv_cp_bridge.gateway", "amv_cp_bridge.mcp_server", "amv_cp_bridge.gui", "markdown2",
 ]
 for package in ("uvicorn", "fastapi", "starlette", "pydantic", "websockets",
                 "customtkinter", "PIL", "playwright", "tkinterweb", "pystray"):

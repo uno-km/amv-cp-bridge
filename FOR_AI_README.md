@@ -63,6 +63,7 @@ The operator's organization has already paid for M365 Copilot at the enterprise 
 | Location | Contents |
 | :--- | :--- |
 | `~/.amv_cp_bridge/accounts.json` | Worker account list (port, name, profile_dir) |
+| `~/.amv_cp_bridge/settings.json` | Engine operation mode (`cold` / `hot`), `standby_timeout_sec`, rate limit |
 | `~/.amv_cp_bridge/account_state.json` | Per-port login state cache (`ok` / `required` / `unknown`) |
 | `~/.amv_cp_bridge/telemetry.db` | SQLite — full query history, token estimates, latency, source |
 | `~/copilot_profile_default/` | Edge profile — M365 session cookies reside here |

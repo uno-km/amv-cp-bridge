@@ -1,0 +1,24 @@
+# Auto-provisioned by AMV-COMPANY TokenHarnessEngine
+.git/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+node_modules/
+dist/
+build/
+.venv/
+venv/
+data/
+logs/
+webview2_profile*/
+*.sqlite3*
+*.aesgcm
+*.bin
+*.mp4
+*.wav
+*.mp3
+*.flac
+*.lock
+package-lock.json
+pnpm-lock.yaml

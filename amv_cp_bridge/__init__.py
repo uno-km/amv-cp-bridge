@@ -9,11 +9,14 @@ __author__ = "Eunho Kim <contact@uno-km.com>"
 
 from ._version import __version__
 
-__all__ = ["CopilotEngine", "CopilotPool", "CopilotWorker", "__version__"]
+__all__ = ["CopilotEngine", "CopilotPool", "CopilotWorker", "load_settings", "save_settings", "__version__"]
 
 
 def __getattr__(name):
     if name in ("CopilotEngine", "CopilotPool", "CopilotWorker"):
         from . import engine
         return getattr(engine, name)
+    if name in ("load_settings", "save_settings"):
+        from . import settings
+        return getattr(settings, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

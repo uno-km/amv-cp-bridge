@@ -211,6 +211,35 @@ async def api_purge():
         w.kill_browser_process()
     return {"ok": True, "message": "모든 Edge 프로세스가 강제 소각되어 0MB로 회수되었습니다."}
 
+class SettingsUpdateRequest(BaseModel):
+    mode: Optional[str] = Field(None, description="'cold' or 'hot'")
+    standby_timeout_sec: Optional[int] = Field(None, description="Standby timeout in seconds")
+    rate_limit_rpm: Optional[int] = Field(None, description="Rate limit RPM")
+
+@app.get("/api/settings")
+async def api_get_settings():
+    """현재 브릿지 동작 모드 및 수명 주기 설정 반환"""
+    return {
+        "status": "ok",
+        "settings": engine.settings,
+    }
+
+@app.post("/api/settings")
+async def api_update_settings(req: SettingsUpdateRequest):
+    """브릿지 동작 모드(콜드/핫로딩) 및 대기 시간 동적 적용 및 영구 저장"""
+    data = {}
+    if req.mode is not None:
+        data["mode"] = req.mode
+    if req.standby_timeout_sec is not None:
+        data["standby_timeout_sec"] = req.standby_timeout_sec
+    if req.rate_limit_rpm is not None:
+        data["rate_limit_rpm"] = req.rate_limit_rpm
+    updated = engine.update_settings(data)
+    return {
+        "status": "ok",
+        "settings": updated,
+    }
+
 @app.post("/api/accounts/{port}/login", status_code=202)
 async def api_account_login(port: int):
     """계정 로그인 창을 띄우고 연결 상태를 확인한다. 결과는 SSE accounts 이벤트로 전달된다."""
@@ -444,6 +473,22 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     /* ── Content Area ── */
     .content{flex:1;overflow-y:auto;padding:20px}
     .panel{display:none}.panel.active{display:block}
+    /* ── Settings ── */
+    .settings-group{margin-bottom:20px}
+    .mode-select-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:14px 0}
+    @media(max-width:680px){.mode-select-grid{grid-template-columns:1fr}}
+    .mode-card{border:2px solid var(--bdr);border-radius:12px;padding:16px;cursor:pointer;transition:.2s;background:#fff}
+    .mode-card:hover{border-color:var(--ps);background:#fafafa}
+    .mode-card.selected{border-color:var(--p);background:#f5f3ff}
+    .mode-card-title{font-size:.95rem;font-weight:700;display:flex;align-items:center;gap:8px;margin-bottom:8px}
+    .mode-card-desc{font-size:.8rem;color:var(--m);line-height:1.6}
+    .timeout-row{display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap}
+    .timeout-input{width:110px;padding:8px 12px;border:1px solid var(--bdr);border-radius:8px;font-size:.9rem;font-family:var(--mono)}
+    .btn-preset{padding:6px 12px;font-size:.78rem;font-weight:600;border:1px solid var(--bdr);border-radius:8px;background:#fff;cursor:pointer;color:var(--m);transition:.15s}
+    .btn-preset:hover{border-color:var(--p);color:var(--p);background:#f5f3ff}
+    .btn-save{background:var(--p);color:#fff;border:none;padding:10px 22px;border-radius:10px;font-weight:700;font-size:.9rem;cursor:pointer;transition:.15s}
+    .btn-save:hover{background:#4f46e5}
+    .save-alert{display:inline-block;margin-left:12px;font-size:.82rem;font-weight:600;color:var(--g)}
     /* ── Cards ── */
     .card{background:var(--card);border:1px solid var(--bdr);border-radius:var(--rad);padding:18px 20px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.04)}
     .card-title{font-size:.82rem;font-weight:700;color:var(--m);margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;padding-bottom:10px;border-bottom:1px solid var(--bdr)}
@@ -555,6 +600,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     </div>
     <div class="tab" onclick="switchTab('usage')" id="tab-usage">
       <span>📈</span><span data-i="tab_usage">사용량</span>
+    </div>
+    <div class="tab" onclick="switchTab('settings')" id="tab-settings">
+      <span>⚙️</span><span data-i="tab_settings">설정</span>
     </div>
     <div class="tab" onclick="switchTab('howto')" id="tab-howto">
       <span>📖</span><span data-i="tab_howto">사용방법</span>
@@ -726,6 +774,63 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       </div>
     </div>
 
+    <!-- ⑤ Settings Panel -->
+    <div class="panel" id="panel-settings">
+      <div class="card">
+        <div class="card-title">
+          <span>⚡ <span data-i="cfg_title">브릿지 동작 모드 및 수명 주기 설정</span></span>
+          <span style="font-size:.72rem;background:#ede9fe;color:#7c3aed;padding:2px 8px;border-radius:99px;font-weight:700">v1.1.0</span>
+        </div>
+
+        <div class="settings-group">
+          <label style="font-weight:700;font-size:.88rem;color:var(--t)" data-i="cfg_mode_label">동작 모드 선택</label>
+          <div class="mode-select-grid">
+            <div class="mode-card selected" id="optCold" onclick="selectMode('cold')">
+              <div class="mode-card-title">
+                <input type="radio" name="bridgeMode" id="radioCold" checked>
+                <label for="radioCold" style="cursor:pointer" data-i="cfg_mode_cold">❄️ 콜드 유지 (기본값 / 0MB 권장)</label>
+              </div>
+              <div class="mode-card-desc" data-i="cfg_desc_cold">
+                • 질문-답변 완료 즉시 Edge 브라우저를 완전 강제 종료합니다.<br>
+                • 평상시 유휴 메모리 점유율을 0MB로 깨끗하게 유지합니다.<br>
+                • 첫 질문 시 브라우저 기동에 10~15초 소요됩니다.
+              </div>
+            </div>
+
+            <div class="mode-card" id="optHot" onclick="selectMode('hot')">
+              <div class="mode-card-title">
+                <input type="radio" name="bridgeMode" id="radioHot">
+                <label for="radioHot" style="cursor:pointer" data-i="cfg_mode_hot">🔥 핫로딩 (웜 스탠바이 / 초고속)</label>
+              </div>
+              <div class="mode-card-desc" data-i="cfg_desc_hot">
+                • 질문 완료 후에도 설정된 시간 동안 Edge를 켜둔 채 대기합니다.<br>
+                • 연속 질문 시 5초 미만 즉각 응답 및 이전 맥락이 유지됩니다.<br>
+                • 대기 시간 만료 시 메모리 누수 방지를 위해 자동으로 브라우저를 종료(0MB)합니다.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-group" id="timeoutGroup" style="border-top:1px solid var(--bdr);padding-top:16px">
+          <label style="font-weight:700;font-size:.88rem;color:var(--t)" data-i="cfg_timeout_label">웜 스탠바이 유지 시간 (초 단위)</label>
+          <div style="font-size:.78rem;color:var(--m);margin-top:4px" data-i="cfg_timeout_hint">핫로딩 모드에서 마지막 요청 완료 후 브라우저 프로세스를 유지할 시간입니다.</div>
+          <div class="timeout-row">
+            <input type="number" id="inputTimeout" class="timeout-input" value="300" min="10" max="86400">
+            <span style="font-size:.85rem;color:var(--m)" data-i="seconds">초</span>
+            <button type="button" class="btn-preset" onclick="setTimeoutVal(60)">60초 (1분)</button>
+            <button type="button" class="btn-preset" onclick="setTimeoutVal(300)">300초 (5분)</button>
+            <button type="button" class="btn-preset" onclick="setTimeoutVal(600)">600초 (10분)</button>
+            <button type="button" class="btn-preset" onclick="setTimeoutVal(1800)">1800초 (30분)</button>
+          </div>
+        </div>
+
+        <div style="margin-top:24px;display:flex;align-items:center">
+          <button class="btn-save" onclick="saveSettings()">💾 <span data-i="cfg_btn_save">설정 저장</span></button>
+          <span id="saveAlert" class="save-alert" style="display:none">✓ <span data-i="cfg_saved_msg">설정이 성공적으로 저장되었습니다.</span></span>
+        </div>
+      </div>
+    </div>
+
   </div><!-- .content -->
 </div><!-- .app -->
 
@@ -748,7 +853,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 // ── i18n ──
 const L = {
   ko:{
-    tab_dash:"대시보드", tab_usage:"사용량", tab_howto:"사용방법", tab_about:"만든이",
+    tab_dash:"대시보드", tab_usage:"사용량", tab_settings:"설정", tab_howto:"사용방법", tab_about:"만든이",
     idle_sub:"대기 중", lbl_queue:"대기 큐", lbl_accounts:"계정",
     today:"오늘", week:"이번 주", month:"이번 달", year:"올해", times:"회",
     workers_title:"계정 상태", task_title:"현재 작업", no_task:"대기 중",
@@ -772,13 +877,24 @@ const L = {
     ht_ext2:"개발자 모드 ON → 압축해제된 확장 프로그램을 로드합니다 클릭",
     ht_ext3:"Releases의 amv-cp-bridge-extension.zip 압축 해제 폴더 선택 → Ctrl+Shift+Y 로 사이드바 열기",
     ht_mac:"macOS 설치",
+    cfg_title:"브릿지 동작 모드 및 수명 주기 설정",
+    cfg_mode_label:"동작 모드 선택",
+    cfg_mode_cold:"❄️ 콜드 유지 (기본값 / 0MB 권장)",
+    cfg_mode_hot:"🔥 핫로딩 (웜 스탠바이 / 초고속)",
+    cfg_desc_cold:"• 질문-답변 완료 즉시 Edge 브라우저를 완전 강제 종료합니다.<br>• 평상시 유휴 메모리 점유율을 0MB로 깨끗하게 유지합니다.<br>• 첫 질문 시 브라우저 기동에 10~15초 소요됩니다.",
+    cfg_desc_hot:"• 질문 완료 후에도 설정된 시간 동안 Edge를 켜둔 채 대기합니다.<br>• 연속 질문 시 5초 미만 즉각 응답 및 이전 맥락이 유지됩니다.<br>• 대기 시간 만료 시 메모리 누수 방지를 위해 자동으로 브라우저를 종료(0MB)합니다.",
+    cfg_timeout_label:"웜 스탠바이 유지 시간 (초 단위)",
+    cfg_timeout_hint:"핫로딩 모드에서 마지막 요청 완료 후 브라우저 프로세스를 유지할 시간입니다.",
+    cfg_btn_save:"설정 저장",
+    cfg_saved_msg:"설정이 성공적으로 저장되고 엔진에 즉시 적용되었습니다.",
+    seconds:"초",
     about_desc:"amv-cp-bridge를 만들고 있습니다. 피드백이나 커피 한 잔은 언제나 환영합니다 ☕",
     lk_site:"웹사이트", lk_blog:"블로그", lk_coffee:"커피 한 잔",
     about_footer:"Apache-2.0 OR Commercial License · Copyright © 2026 Eunho Kim / AMEVA Foundation",
     about_stack:"Python · FastAPI · Playwright · SQLite · CustomTkinter · Chrome MV3",
   },
   en:{
-    tab_dash:"Dashboard", tab_usage:"Usage", tab_howto:"How to Use", tab_about:"About",
+    tab_dash:"Dashboard", tab_usage:"Usage", tab_settings:"Settings", tab_howto:"How to Use", tab_about:"About",
     idle_sub:"Idle", lbl_queue:"Queue", lbl_accounts:"Accounts",
     today:"Today", week:"This Week", month:"This Month", year:"This Year", times:"queries",
     workers_title:"Account Status", task_title:"Current Task", no_task:"Idle",
@@ -802,6 +918,17 @@ const L = {
     ht_ext2:"Enable Developer Mode → Click Load unpacked",
     ht_ext3:"Select the folder extracted from amv-cp-bridge-extension.zip in Releases → Press Ctrl+Shift+Y to open sidebar",
     ht_mac:"macOS Install",
+    cfg_title:"Bridge Operation Mode & Standby Lifecycle",
+    cfg_mode_label:"Operation Mode",
+    cfg_mode_cold:"❄️ Cold Launch (Default / 0MB Idle)",
+    cfg_mode_hot:"🔥 Hot Standby (Keep-Alive / Ultra-Fast)",
+    cfg_desc_cold:"• Forcibly terminates the Edge browser process immediately after query.<br>• Guarantees 0MB idle memory footprint.<br>• Takes 10-15s to launch browser on new query.",
+    cfg_desc_hot:"• Keeps Edge browser alive in background for specified seconds after query.<br>• Enables <5s ultra-fast consecutive responses and retains conversation context.<br>• Automatically terminates browser to 0MB if no further queries arrive within timeout.",
+    cfg_timeout_label:"Warm Standby Timeout (Seconds)",
+    cfg_timeout_hint:"How long to keep Edge running after the last query in hot mode.",
+    cfg_btn_save:"Save Settings",
+    cfg_saved_msg:"Settings successfully saved and applied to engine.",
+    seconds:"sec",
     about_desc:"Building amv-cp-bridge. Feedback and coffee are always welcome ☕",
     lk_site:"Website", lk_blog:"Blog", lk_coffee:"Buy Me a Coffee",
     about_footer:"Apache-2.0 OR Commercial License · Copyright © 2026 Eunho Kim / AMEVA Foundation",
@@ -911,7 +1038,10 @@ async function updateDashboard(){
       document.getElementById('workerSummary').textContent=st.total_accounts+' accts';
       document.getElementById('workersList').innerHTML=st.workers.map(w=>{
         const cls=w.is_busy?'b-busy':(w.login_state==='ok'?'b-idle':'b-off');
-        const txt=w.is_busy?t('busy'):t(w.login_state==='ok'?'acct_ok':(w.login_state==='required'?'acct_required':'acct_unknown'));
+        let txt=w.is_busy?t('busy'):t(w.login_state==='ok'?'acct_ok':(w.login_state==='required'?'acct_required':'acct_unknown'));
+        if(!w.is_busy && w.is_alive && w.standby_remaining_sec > 0){
+          txt += ' (⏱️ ' + Math.round(w.standby_remaining_sec) + 's)';
+        }
         return `<div class="wi"><div><div class="wn">${esc(w.name)}</div><div class="ws">port ${w.port}</div></div><span class="wb ${cls}">${txt}</span></div>`;
       }).join('');
     }
@@ -979,10 +1109,69 @@ async function resetStats(){
   try{await fetch('/api/stats/reset',{method:'POST'});updateDashboard();updateChart();}catch(e){alert(e);}
 }
 
+// ── Settings UI Handler ──
+let currentSettings = { mode: 'cold', standby_timeout_sec: 300 };
+
+async function loadSettingsUI(){
+  try{
+    const res = await fetch('/api/settings').then(r=>r.json());
+    if(res.settings){
+      currentSettings = res.settings;
+      selectMode(currentSettings.mode || 'cold', true);
+      const input = document.getElementById('inputTimeout');
+      if(input) input.value = currentSettings.standby_timeout_sec || 300;
+    }
+  }catch(e){}
+}
+
+function selectMode(m, updateRadio=true){
+  currentSettings.mode = m;
+  const isCold = m === 'cold';
+  const optCold = document.getElementById('optCold');
+  const optHot = document.getElementById('optHot');
+  if(optCold) optCold.classList.toggle('selected', isCold);
+  if(optHot) optHot.classList.toggle('selected', !isCold);
+  if(updateRadio){
+    const rCold = document.getElementById('radioCold');
+    const rHot = document.getElementById('radioHot');
+    if(rCold) rCold.checked = isCold;
+    if(rHot) rHot.checked = !isCold;
+  }
+}
+
+function setTimeoutVal(v){
+  const input = document.getElementById('inputTimeout');
+  if(input) input.value = v;
+}
+
+async function saveSettings(){
+  const mode = currentSettings.mode || 'cold';
+  const input = document.getElementById('inputTimeout');
+  const timeout = parseInt(input ? input.value : '300', 10) || 300;
+  try{
+    const res = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: mode, standby_timeout_sec: timeout })
+    }).then(r=>r.json());
+    if(res.status === 'ok'){
+      const alertEl = document.getElementById('saveAlert');
+      if(alertEl){
+        alertEl.style.display = 'inline-block';
+        setTimeout(()=>{ alertEl.style.display = 'none'; }, 3000);
+      }
+      updateDashboard();
+    }
+  }catch(e){
+    alert('설정 저장 실패: ' + e);
+  }
+}
+
 // ── Boot ──
 initChart();
 updateSetupPanel();
 updateDashboard();
+loadSettingsUI();
 </script>
 </body>
 </html>

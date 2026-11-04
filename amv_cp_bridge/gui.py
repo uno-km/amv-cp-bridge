@@ -21,9 +21,11 @@ import http.client
 try:
     from . import updater
     from ._version import __version__
+    from .settings import load_settings, save_settings, DEFAULT_SETTINGS
 except (ImportError, ValueError):
     from amv_cp_bridge import updater
     from amv_cp_bridge._version import __version__
+    from amv_cp_bridge.settings import load_settings, save_settings, DEFAULT_SETTINGS
 
 
 def close_boot_splash():
@@ -663,7 +665,7 @@ def _launch_main_gui(host: str, port: int, server_ok: bool = True):
 
     TEXTS = {
         "ko": dict(
-            tab_dash="📊 대시보드", tab_usage="📈 사용량", tab_howto="📖 사용방법", tab_about="🙋 만든이",
+            tab_dash="📊 대시보드", tab_usage="📈 사용량", tab_settings="⚙️ 설정", tab_howto="📖 사용방법", tab_about="🙋 만든이",
             lbl_today="오늘", lbl_week="이번 주", lbl_month="이번 달", lbl_year="올해",
             tokens="토큰",
             idle="● 대기 중", busy="● 처리 중", connecting="● 연결 중...",
@@ -685,13 +687,24 @@ def _launch_main_gui(host: str, port: int, server_ok: bool = True):
             ht_4="4. MCP 서버 (Claude Desktop / Cursor)\n   → amv-cp-bridge serve",
             ht_5="5. 브라우저 확장프로그램\n   → Releases에서 amv-cp-bridge-extension.zip 다운로드 후 압축 해제\n   → chrome://extensions → 개발자 모드 → 압축해제된 폴더 로드",
             ht_modes="추론 모드: 자동 / 빠름 / 깊게 / Sol Quick / Sol Deep Thinking",
+            cfg_title="⚡ 브릿지 동작 모드 및 수명 주기 설정 (Lifecycle & Standby)",
+            cfg_mode_label="동작 모드 선택",
+            cfg_mode_cold="❄️ 콜드 유지 (기본값 / 0MB 권장)",
+            cfg_mode_hot="🔥 핫로딩 (웜 스탠바이 / 초고속 응답)",
+            cfg_desc_cold="• 질문-답변 완료 즉시 Edge 브라우저 프로세스를 완전히 강제 종료합니다.\n• 유휴 상태 메모리 점유율을 0MB로 깨끗하게 유지합니다.\n• 새 질문 시 브라우저 최초 기동에 약 10~15초가 소요됩니다.",
+            cfg_desc_hot="• 질문-답변 완료 후에도 설정된 시간 동안 Edge 브라우저를 백그라운드에 켜둔 채 대기합니다.\n• 연속 질문 시 5초 미만 즉각 응답 및 이전 세션 맥락이 유지됩니다.\n• 대기 시간 동안 추가 요청이 없으면 메모리 회수를 위해 자동으로 브라우저를 종료(0MB)합니다.",
+            cfg_timeout_label="웜 스탠바이 유지 시간 (초 단위)",
+            cfg_timeout_hint="핫로딩 모드에서 마지막 요청 완료 후 브라우저 프로세스를 유지할 시간입니다.",
+            cfg_btn_save="💾 설정 저장",
+            cfg_saved_msg="✓ 설정이 성공적으로 저장되고 엔진에 즉시 적용되었습니다.",
+            seconds="초 (sec)",
             ab_desc="M365 Copilot을 로컬 API로 연결하는 브릿지입니다.",
             ab_site="🌐  웹사이트", ab_gh="🐙  GitHub", ab_blog="✍️  블로그", ab_coffee="☕  커피 한 잔",
             ab_license="Apache-2.0 OR Commercial License\nCopyright © 2026 Eunho Kim / AMEVA Foundation",
             flag_btn="🇺🇸 EN",
         ),
         "en": dict(
-            tab_dash="📊 Dashboard", tab_usage="📈 Usage", tab_howto="📖 How to Use", tab_about="🙋 About",
+            tab_dash="📊 Dashboard", tab_usage="📈 Usage", tab_settings="⚙️ Settings", tab_howto="📖 How to Use", tab_about="🙋 About",
             lbl_today="Today", lbl_week="This Week", lbl_month="This Month", lbl_year="This Year",
             tokens="tokens",
             idle="● Idle", busy="● Processing", connecting="● Connecting...",
@@ -713,6 +726,17 @@ def _launch_main_gui(host: str, port: int, server_ok: bool = True):
             ht_4="4. MCP Server (Claude Desktop / Cursor)\n   → amv-cp-bridge serve",
             ht_5="5. Browser Extension\n   → Download amv-cp-bridge-extension.zip from Releases and extract it\n   → chrome://extensions → Developer mode → Load unpacked",
             ht_modes="Modes: Auto / Fast / Deep / Sol Quick / Sol Deep Thinking",
+            cfg_title="⚡ Bridge Operation Mode & Standby Lifecycle",
+            cfg_mode_label="Operation Mode",
+            cfg_mode_cold="❄️ Cold Launch (Default / 0MB Idle)",
+            cfg_mode_hot="🔥 Hot Standby (Keep-Alive / Ultra-Fast)",
+            cfg_desc_cold="• Forcibly terminates the Edge browser process immediately after query completion.\n• Guarantees 0MB idle memory footprint.\n• Takes 10-15s to launch browser on new query.",
+            cfg_desc_hot="• Keeps Edge browser alive in background for specified seconds after query completion.\n• Enables <5s ultra-fast consecutive responses and retains conversation context.\n• Automatically terminates browser to 0MB if no further queries arrive within timeout.",
+            cfg_timeout_label="Warm Standby Timeout (Seconds)",
+            cfg_timeout_hint="How long to keep Edge running after the last query in hot mode.",
+            cfg_btn_save="💾 Save Settings",
+            cfg_saved_msg="✓ Settings successfully saved and applied to engine.",
+            seconds="sec",
             ab_desc="A bridge that exposes M365 Copilot as a local API.",
             ab_site="🌐  Website", ab_gh="🐙  GitHub", ab_blog="✍️  Blog", ab_coffee="☕  Buy Me a Coffee",
             ab_license="Apache-2.0 OR Commercial License\nCopyright © 2026 Eunho Kim / AMEVA Foundation",
@@ -796,7 +820,7 @@ def _launch_main_gui(host: str, port: int, server_ok: bool = True):
                                border_width=0)
     tab_frame.pack(fill="both", expand=True)
 
-    for n in ["📊 대시보드", "📈 사용량", "📖 사용방법", "🙋 만든이"]:
+    for n in ["📊 대시보드", "📈 사용량", "⚙️ 설정", "📖 사용방법", "🙋 만든이"]:
         tab_frame.add(n)
 
     def make_card(parent, **kw):
@@ -1139,6 +1163,137 @@ p{{margin:.6em 0}}
             command=_open_in_browser)
         browser_btn.pack(side="bottom", pady=(0, 10))
 
+    # ══ TAB: 설정 ══════════════════════════════════════════════
+    t_cfg = tab_frame.tab("⚙️ 설정")
+    t_cfg.configure(fg_color=C["bg"])
+
+    cfg_card = make_card(t_cfg)
+    cfg_card.pack(fill="both", expand=True, padx=12, pady=10)
+    cfg_title_lbl = card_title(cfg_card, T("cfg_title"))
+
+    cfg_scroll = ctk.CTkScrollableFrame(cfg_card, fg_color="transparent")
+    cfg_scroll.pack(fill="both", expand=True, padx=16, pady=(10, 10))
+
+    cfg_mode_lbl = ctk.CTkLabel(cfg_scroll, text=T("cfg_mode_label"),
+                                font=ctk.CTkFont(size=13, weight="bold"), text_color=C["text"])
+    cfg_mode_lbl.pack(anchor="w", pady=(4, 8))
+
+    saved_settings = load_settings()
+    current_mode_var = ctk.StringVar(value=saved_settings.get("mode", "cold"))
+
+    def _on_mode_change(v):
+        is_cold = (T("cfg_mode_cold") in v or "콜드" in v or "Cold" in v)
+        current_mode_var.set("cold" if is_cold else "hot")
+
+    mode_seg = ctk.CTkSegmentedButton(
+        cfg_scroll,
+        values=[T("cfg_mode_cold"), T("cfg_mode_hot")],
+        font=ctk.CTkFont(size=12, weight="bold"),
+        height=36,
+        selected_color=C["primary"],
+        selected_hover_color="#4f46e5",
+        unselected_color="#e2e8f0",
+        unselected_hover_color="#cbd5e1",
+        text_color=C["text"],
+        command=lambda v: _on_mode_change(v)
+    )
+    mode_seg.set(T("cfg_mode_cold") if current_mode_var.get() == "cold" else T("cfg_mode_hot"))
+    mode_seg.pack(fill="x", pady=(0, 12))
+
+    desc_frame = ctk.CTkFrame(cfg_scroll, fg_color="#f8faff", corner_radius=10,
+                              border_width=1, border_color=C["border"])
+    desc_frame.pack(fill="x", pady=(0, 16))
+
+    desc_cold_title = ctk.CTkLabel(desc_frame, text=T("cfg_mode_cold"),
+                                   font=ctk.CTkFont(size=11, weight="bold"), text_color="#2563eb")
+    desc_cold_title.pack(anchor="w", padx=14, pady=(10, 2))
+    desc_cold_body = ctk.CTkLabel(desc_frame, text=T("cfg_desc_cold"),
+                                  font=ctk.CTkFont(size=11), text_color=C["text"], justify="left")
+    desc_cold_body.pack(anchor="w", padx=14, pady=(0, 8))
+
+    ctk.CTkFrame(desc_frame, height=1, fg_color=C["border"]).pack(fill="x", padx=14, pady=4)
+
+    desc_hot_title = ctk.CTkLabel(desc_frame, text=T("cfg_mode_hot"),
+                                  font=ctk.CTkFont(size=11, weight="bold"), text_color="#d97706")
+    desc_hot_title.pack(anchor="w", padx=14, pady=(6, 2))
+    desc_hot_body = ctk.CTkLabel(desc_frame, text=T("cfg_desc_hot"),
+                                 font=ctk.CTkFont(size=11), text_color=C["text"], justify="left")
+    desc_hot_body.pack(anchor="w", padx=14, pady=(0, 10))
+
+    timeout_frame = ctk.CTkFrame(cfg_scroll, fg_color="transparent")
+    timeout_frame.pack(fill="x", pady=(0, 16))
+
+    cfg_timeout_lbl = ctk.CTkLabel(timeout_frame, text=T("cfg_timeout_label"),
+                                   font=ctk.CTkFont(size=13, weight="bold"), text_color=C["text"])
+    cfg_timeout_lbl.pack(anchor="w", pady=(0, 2))
+    cfg_timeout_hint_lbl = ctk.CTkLabel(timeout_frame, text=T("cfg_timeout_hint"),
+                                        font=ctk.CTkFont(size=10), text_color=C["muted"])
+    cfg_timeout_hint_lbl.pack(anchor="w", pady=(0, 8))
+
+    t_input_row = ctk.CTkFrame(timeout_frame, fg_color="transparent")
+    t_input_row.pack(anchor="w")
+
+    timeout_entry = ctk.CTkEntry(t_input_row, width=100, height=32,
+                                 font=ctk.CTkFont(size=12, weight="bold"))
+    timeout_entry.insert(0, str(saved_settings.get("standby_timeout_sec", 300)))
+    timeout_entry.pack(side="left", padx=(0, 6))
+
+    sec_unit_lbl = ctk.CTkLabel(t_input_row, text=T("seconds"), font=ctk.CTkFont(size=11), text_color=C["muted"])
+    sec_unit_lbl.pack(side="left", padx=(0, 12))
+
+    def _set_preset(val: int):
+        timeout_entry.delete(0, "end")
+        timeout_entry.insert(0, str(val))
+
+    for p_sec, p_lbl in [(60, "60초"), (300, "300초 (5분)"), (600, "600초 (10분)"), (1800, "1800초 (30분)")]:
+        ctk.CTkButton(t_input_row, text=p_lbl, width=84, height=28,
+                      fg_color=C["border"], text_color=C["muted"], hover_color="#e2e8f0",
+                      corner_radius=6, font=ctk.CTkFont(size=10),
+                      command=lambda v=p_sec: _set_preset(v)).pack(side="left", padx=3)
+
+    save_row = ctk.CTkFrame(cfg_scroll, fg_color="transparent")
+    save_row.pack(fill="x", pady=(8, 12))
+
+    cfg_saved_lbl = ctk.CTkLabel(save_row, text="", font=ctk.CTkFont(size=11, weight="bold"),
+                                 text_color=C["green"])
+
+    def do_save_settings():
+        from tkinter import messagebox
+        raw_mode_str = mode_seg.get()
+        chosen_mode = "cold" if (T("cfg_mode_cold") in raw_mode_str or "콜드" in raw_mode_str or "Cold" in raw_mode_str) else "hot"
+        raw_t = timeout_entry.get().strip()
+        try:
+            t_sec = int(raw_t)
+            if t_sec < 10 or t_sec > 86400:
+                raise ValueError
+        except ValueError:
+            messagebox.showwarning("설정 오류", "스탠바이 시간은 10초 ~ 86400초 사이의 숫자로 입력해주세요.")
+            return
+
+        payload = {"mode": chosen_mode, "standby_timeout_sec": t_sec}
+        save_settings(payload)
+        try:
+            req_data = json.dumps(payload).encode("utf-8")
+            req = urllib.request.Request(
+                f"{BASE}/api/settings",
+                data=req_data,
+                headers={"Content-Type": "application/json"},
+                method="POST"
+            )
+            urllib.request.urlopen(req, timeout=3)
+        except Exception:
+            pass
+
+        cfg_saved_lbl.configure(text=T("cfg_saved_msg"), text_color=C["green"])
+        app_root.after(3500, lambda: cfg_saved_lbl.configure(text=""))
+
+    save_btn = ctk.CTkButton(save_row, text=T("cfg_btn_save"), width=140, height=36,
+                             fg_color=C["primary"], text_color="#ffffff", hover_color="#4f46e5",
+                             corner_radius=8, font=ctk.CTkFont(size=12, weight="bold"),
+                             command=do_save_settings)
+    save_btn.pack(side="left", padx=(0, 10))
+    cfg_saved_lbl.pack(side="left")
+
     # ══ TAB 3: 사용방법 ══════════════════════════════════════════
     t3 = tab_frame.tab("📖 사용방법")
     t3.configure(fg_color=C["bg"])
@@ -1216,6 +1371,18 @@ p{{margin:.6em 0}}
         qcard_title_lbl.configure(text=T("card_queue"))
         hist_title_lbl.configure(text=T("hist_title"))
         howto_title_lbl.configure(text=T("howto_title"))
+        cfg_title_lbl.configure(text=T("cfg_title"))
+        cfg_mode_lbl.configure(text=T("cfg_mode_label"))
+        desc_cold_title.configure(text=T("cfg_mode_cold"))
+        desc_cold_body.configure(text=T("cfg_desc_cold"))
+        desc_hot_title.configure(text=T("cfg_mode_hot"))
+        desc_hot_body.configure(text=T("cfg_desc_hot"))
+        cfg_timeout_lbl.configure(text=T("cfg_timeout_label"))
+        cfg_timeout_hint_lbl.configure(text=T("cfg_timeout_hint"))
+        sec_unit_lbl.configure(text=T("seconds"))
+        save_btn.configure(text=T("cfg_btn_save"))
+        mode_seg.configure(values=[T("cfg_mode_cold"), T("cfg_mode_hot")])
+        mode_seg.set(T("cfg_mode_cold") if current_mode_var.get() == "cold" else T("cfg_mode_hot"))
 
     lang_btn.configure(command=toggle_lang)
 
@@ -1294,6 +1461,17 @@ p{{margin:.6em 0}}
                 _apply_update(st, stats)
         elif etype == "accounts":
             _update_workers(evt.get("workers") or [])
+        elif etype == "settings_updated":
+            s_data = evt.get("settings") or {}
+            if s_data:
+                m = s_data.get("mode", "cold")
+                current_mode_var.set(m)
+                mode_seg.set(T("cfg_mode_cold") if m == "cold" else T("cfg_mode_hot"))
+                if "standby_timeout_sec" in s_data:
+                    timeout_entry.delete(0, "end")
+                    timeout_entry.insert(0, str(s_data["standby_timeout_sec"]))
+            if "workers" in evt:
+                _update_workers(evt["workers"])
         elif etype in ("task_queued", "task_start", "task_done"):
             _apply_task_event(evt)
             # stats_dirty면 stats도 같이 옴
@@ -1392,10 +1570,14 @@ p{{margin:.6em 0}}
             pw = w.get("port")
             is_busy = w.get("is_busy", False)
             login_state = w.get("login_state", "unknown")
+            standby_rem = w.get("standby_remaining_sec", 0)
             if is_busy:
                 s, col = T("worker_busy"), C["primary"]
             elif login_state == "ok":
-                s, col = T("worker_ok"), C["green"]
+                if standby_rem and standby_rem > 0:
+                    s, col = f"{T('worker_ok')} (⏱️ {int(standby_rem)}s)", C["green"]
+                else:
+                    s, col = T("worker_ok"), C["green"]
             elif login_state == "required":
                 s, col = T("worker_login"), C["red"]
             else:

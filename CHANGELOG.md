@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.1.0
+
+### Added
+- **Operation Mode Configuration**: Added user-selectable engine lifecycle modes in native GUI, web dashboard, and persistent `~/.amv_cp_bridge/settings.json`:
+  - **Cold Launch (콜드 유지 / Ephemeral 0MB)**: Forcibly terminates the Edge browser immediately after query completion to guarantee 0MB idle memory footprint (default).
+  - **Hot Standby (핫로딩 / 웜 스탠바이)**: Keeps Edge browser running in background for a configurable standby window for ultra-fast consecutive responses (<5s) and session context retention.
+- **Configurable Standby Timeout (초 단위)**: Customizable countdown timer (10s ~ 86400s, with quick 60s, 300s, 600s, 1800s presets) that automatically shuts down Edge and reclaims memory to 0MB when idle.
+- **Dynamic Settings REST API**: Added `GET /api/settings` and `POST /api/settings` endpoints for runtime configuration persistence.
+- **Dedicated Settings Tab**: Added "⚙️ 설정" (Settings) tab in both the native CustomTkinter GUI and the web dashboard (`/dashboard`) with real-time feedback, detailed descriptions, and instant engine synchronization.
+- **Live Standby Countdown Display**: The account status cards in the GUI and web dashboard now display remaining seconds (`⏱️ XXs`) during warm standby.
+
 ## 1.0.2
 
 ### Fixed

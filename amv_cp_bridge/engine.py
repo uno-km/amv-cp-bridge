@@ -24,6 +24,11 @@ try:
     from .telemetry_db import telemetry_db
 except (ImportError, ValueError):
     from telemetry_db import telemetry_db
+
+try:
+    from .settings import load_settings, save_settings, DEFAULT_SETTINGS
+except (ImportError, ValueError):
+    from settings import load_settings, save_settings, DEFAULT_SETTINGS
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 
 COPILOT_URL = "https://m365.cloud.microsoft/chat"
@@ -98,11 +103,16 @@ def _find_edge_binary() -> str:
 DEFAULT_EPHEMERAL = os.environ.get("COPILOT_EPHEMERAL_MODE", "true").lower() in ("true", "1", "yes")
 
 class CopilotWorker:
-    def __init__(self, port: int, name: str, profile_dir: str, ephemeral_mode: bool = DEFAULT_EPHEMERAL):
+    def __init__(self, port: int, name: str, profile_dir: str, mode: str = "cold", standby_timeout_sec: int = 300, ephemeral_mode: Optional[bool] = None):
         self.port = port
         self.name = name
         self.profile_dir = profile_dir
-        self.ephemeral_mode = ephemeral_mode
+        if ephemeral_mode is not None:
+            self.mode = "cold" if ephemeral_mode else "hot"
+        else:
+            self.mode = mode if mode in ("cold", "hot") else "cold"
+        self.ephemeral_mode = (self.mode == "cold")
+        self.standby_timeout_sec = max(10, standby_timeout_sec)
         self.cdp_url = f"http://127.0.0.1:{port}"
         self.playwright = None
         self.browser: Optional[Browser] = None
@@ -110,6 +120,66 @@ class CopilotWorker:
         self.page: Optional[Page] = None
         self._lock = asyncio.Lock()
         self.login_state: str = _read_login_states().get(str(port), "unknown")
+        self._standby_task: Optional[asyncio.Task] = None
+        self._standby_deadline: Optional[float] = None
+
+    def _cancel_standby(self):
+        """진행 중인 웜 스탠바이 카운트다운 타이머 취소"""
+        if self._standby_task and not self._standby_task.done():
+            self._standby_task.cancel()
+        self._standby_task = None
+        self._standby_deadline = None
+
+    def _schedule_standby(self):
+        """마지막 요청 후 브라우저를 켜둔 채 지정된 초 동안 대기 (스탠바이 만료 시 자동 0MB 종료)"""
+        self._cancel_standby()
+        self._standby_deadline = time.time() + self.standby_timeout_sec
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.get_event_loop()
+        self._standby_task = loop.create_task(self._standby_countdown())
+        print(f"[*] [{self.name}] 🔥 핫로딩 모드: 웜 스탠바이 대기 중 ({self.standby_timeout_sec}초 유지)")
+
+    async def _standby_countdown(self):
+        """스탠바이 시간 경과 후 프로세스 회수"""
+        try:
+            await asyncio.sleep(self.standby_timeout_sec)
+            if not self.is_busy():
+                print(f"[+] [{self.name}] ⏱️ 웜 스탠바이({self.standby_timeout_sec}초) 만료 — Edge 프로세스 완전 종료 (0MB 회수)")
+                await self.cleanup()
+                self.kill_browser_process()
+                self._standby_deadline = None
+                event_bus.publish({"type": "accounts", "event": "standby_expired", "worker": self.name})
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            print(f"[!] [{self.name}] 웜 스탠바이 카운트다운 경고: {exc}")
+
+    def apply_settings(self, settings: Dict[str, Any]):
+        """동적 설정 갱신 적용"""
+        new_mode = str(settings.get("mode", self.mode)).lower().strip()
+        if new_mode in ("cold", "hot"):
+            self.mode = new_mode
+            self.ephemeral_mode = (self.mode == "cold")
+        if "standby_timeout_sec" in settings:
+            try:
+                self.standby_timeout_sec = max(10, int(settings["standby_timeout_sec"]))
+            except (ValueError, TypeError):
+                pass
+
+        if self.mode == "cold":
+            self._cancel_standby()
+            if not self.is_busy() and self.is_alive():
+                print(f"[*] [{self.name}] 콜드 모드 전환으로 유휴 브라우저 즉시 회수")
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(self.close())
+                except RuntimeError:
+                    pass
+        elif self.mode == "hot":
+            if not self.is_busy() and self.is_alive():
+                self._schedule_standby()
 
     def _set_login_state(self, state: str):
         self.login_state = state
@@ -411,6 +481,7 @@ class CopilotWorker:
     async def stream_query(self, prompt: str, reset_chat: bool = True) -> AsyncGenerator[str, None]:
         """질문을 던지고 실시간 스트리밍 텍스트 델타를 yield"""
         async with self._lock:
+            self._cancel_standby()
             try:
                 page = await self.connect()
 
@@ -478,9 +549,11 @@ class CopilotWorker:
                     raise TimeoutError(f"Copilot 응답 없음: 메시지 전송 후 {timeout}초 안에 응답을 받지 못했습니다.")
 
             finally:
-                if self.ephemeral_mode:
+                if self.mode == "cold":
                     await self.cleanup()
                     self.kill_browser_process()
+                else:
+                    self._schedule_standby()
 
     async def query(self, prompt: str) -> str:
         collected = []
@@ -489,6 +562,7 @@ class CopilotWorker:
         return "".join(collected).strip()
 
     async def close(self):
+        self._cancel_standby()
         await self.cleanup()
         self.kill_browser_process()
 
@@ -543,15 +617,27 @@ def _load_accounts() -> List[Dict[str, Any]]:
 
 class CopilotPool:
     """멀티 계정 로드밸런싱 풀 관리자 (계정 간 자동 우회) 및 순차 큐 직렬화 엔진"""
-    def __init__(self, ephemeral_mode: bool = DEFAULT_EPHEMERAL):
-        self.ephemeral_mode = ephemeral_mode
+    def __init__(self, mode: Optional[str] = None, standby_timeout_sec: Optional[int] = None, ephemeral_mode: Optional[bool] = None):
+        self.settings = load_settings()
+        if mode is not None:
+            self.settings["mode"] = mode
+        elif ephemeral_mode is not None:
+            self.settings["mode"] = "cold" if ephemeral_mode else "hot"
+        if standby_timeout_sec is not None:
+            self.settings["standby_timeout_sec"] = max(10, standby_timeout_sec)
+
+        self.mode = self.settings.get("mode", "cold")
+        self.standby_timeout_sec = int(self.settings.get("standby_timeout_sec", 300))
+        self.ephemeral_mode = (self.mode == "cold")
+
         accounts = _load_accounts()
         self.workers: List[CopilotWorker] = [
             CopilotWorker(
                 port=int(acc["port"]),
                 name=acc["name"],
                 profile_dir=acc["profile_dir"],
-                ephemeral_mode=self.ephemeral_mode
+                mode=self.mode,
+                standby_timeout_sec=self.standby_timeout_sec
             )
             for acc in accounts
         ]
@@ -562,6 +648,22 @@ class CopilotPool:
         self.task_start_time: Optional[float] = None
         # 실시간 태스크 큐 추적 [{id, source, preview, status, worker, queued_at, started_at}]
         self._task_queue: List[Dict[str, Any]] = []
+
+    def update_settings(self, new_data: Dict[str, Any]) -> Dict[str, Any]:
+        """동적으로 설정을 갱신하고 디스크에 저장 및 워커들에 전파"""
+        persisted = save_settings(new_data)
+        self.settings = persisted
+        self.mode = persisted.get("mode", "cold")
+        self.standby_timeout_sec = int(persisted.get("standby_timeout_sec", 300))
+        self.ephemeral_mode = (self.mode == "cold")
+        for w in self.workers:
+            w.apply_settings(persisted)
+        self._push({
+            "type": "settings_updated",
+            "settings": persisted,
+            "workers": self._worker_brief()
+        })
+        return persisted
 
     def get_status_summary(self) -> str:
         status_lines = []
@@ -576,6 +678,7 @@ class CopilotPool:
         """웹 대시보드 및 실시간 상태 모니터링용 종합 메트릭스"""
         worker_details = []
         available_cnt = 0
+        now = time.time()
         for w in self.workers:
             busy = w.is_busy()
             alive = w.is_alive()
@@ -583,6 +686,7 @@ class CopilotPool:
             if not busy:
                 available_cnt += 1
             st = "BUSY" if busy else ("IDLE" if alive else "OFFLINE_0MB")
+            standby_rem = round(max(0, w._standby_deadline - now), 1) if (alive and not busy and w._standby_deadline) else 0.0
             worker_details.append({
                 "name": w.name,
                 "port": w.port,
@@ -591,7 +695,9 @@ class CopilotPool:
                 "is_alive": alive,
                 "login_state": w.login_state,
                 "pids": pids,
-                "memory_mb": 0 if not alive else (len(pids) * 35) # 추정치
+                "memory_mb": 0 if not alive else (len(pids) * 35), # 추정치
+                "mode": w.mode,
+                "standby_remaining_sec": standby_rem,
             })
 
         elapsed = round(time.time() - self.task_start_time, 1) if (self.active_count > 0 and self.task_start_time) else 0.0
@@ -607,7 +713,10 @@ class CopilotPool:
             "current_task_elapsed_sec": elapsed,
             "available_accounts": available_cnt,
             "total_accounts": len(self.workers),
+            "mode": self.mode,
+            "standby_timeout_sec": self.standby_timeout_sec,
             "ephemeral_mode": self.ephemeral_mode,
+            "settings": self.settings,
             "workers": worker_details,
             "task_queue": list(self._task_queue[-20:]),  # 최근 20개
         }
@@ -628,8 +737,19 @@ class CopilotPool:
             await asyncio.sleep(0.3)
 
     def _worker_brief(self) -> List[Dict[str, Any]]:
-        return [{"name": w.name, "port": w.port, "is_busy": w.is_busy(),
-                 "login_state": w.login_state} for w in self.workers]
+        now = time.time()
+        return [
+            {
+                "name": w.name,
+                "port": w.port,
+                "is_busy": w.is_busy(),
+                "is_alive": w.is_alive(),
+                "login_state": w.login_state,
+                "mode": w.mode,
+                "standby_remaining_sec": round(max(0, w._standby_deadline - now), 1) if (w.is_alive() and not w.is_busy() and w._standby_deadline) else 0.0
+            }
+            for w in self.workers
+        ]
 
     async def open_login(self, port: int) -> bool:
         worker = next((w for w in self.workers if w.port == port), None)
@@ -804,7 +924,7 @@ class CopilotPool:
         return await worker.connect()
 
     async def ensure_browser_running(self):
-        if not self.ephemeral_mode:
+        if self.mode == "hot":
             await self.workers[0].ensure_running()
 
     async def close(self):
