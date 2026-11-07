@@ -11,7 +11,11 @@ import time
 import uuid
 import json
 import asyncio
-from typing import List, Optional, Dict, Any, Union
+import base64
+import re
+import mimetypes
+from pathlib import Path
+from typing import List, Optional, Dict, Any, Union, Tuple
 
 if sys.platform == "win32":
     try:
@@ -140,7 +144,7 @@ def _detect_source(request: Request) -> tuple[str, str, str]:
 
 class ChatMessage(BaseModel):
     role: str = "user"
-    content: str = ""
+    content: Union[str, List[Any]] = ""
 
 class ChatCompletionRequest(BaseModel):
     model: Optional[str] = "gpt-5.6-sol"
@@ -261,22 +265,93 @@ async def list_models():
     ]
     return {"object": "list", "data": models}
 
-def format_messages_to_prompt(messages: List[ChatMessage], model_name: str) -> str:
-    prompt_parts = []
-    deepthink = ("deepthink" in model_name.lower()) or ("sol" in model_name.lower())
+TEMP_UPLOADS_DIR = Path.home() / ".amv_cp_bridge" / "temp_uploads"
+TEMP_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
+
+def cleanup_temp_files(file_paths: List[str]):
+    """요청 처리 완료 후 생성된 로컬 임시 업로드 파일들을 안전하게 삭제"""
+    for fp in file_paths:
+        try:
+            p = Path(fp)
+            if p.is_file():
+                p.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def parse_messages_and_files(messages: List[ChatMessage], model_name: str) -> Tuple[str, List[str], List[str]]:
+    """OpenAI Vision 및 멀티턴 메시지를 파싱하여 텍스트 프롬프트, 첨부 파일 목록, 임시 파일 목록을 반환"""
+    prompt_parts = []
+    file_paths: List[str] = []
+    temp_files: List[str] = []
+
+    deepthink = ("deepthink" in model_name.lower()) or ("sol" in model_name.lower())
     if deepthink:
         prompt_parts.append("[시스템 지침: 1원리(First-principles) 기반으로 수식 및 코드를 생략 없이 완벽하게 유도하여 작성하시오.]\n")
 
     for msg in messages:
-        if msg.role == "system":
-            prompt_parts.append(f"[시스템]: {msg.content}")
-        elif msg.role == "user":
-            prompt_parts.append(f"[질문]: {msg.content}")
-        elif msg.role == "assistant":
-            prompt_parts.append(f"[답변]: {msg.content}")
+        role_prefix = "[시스템]" if msg.role == "system" else ("[질문]" if msg.role == "user" else "[답변]")
+        text_content = ""
 
-    return "\n\n".join(prompt_parts)
+        if isinstance(msg.content, str):
+            text_content = msg.content
+        elif isinstance(msg.content, list):
+            parts = []
+            for item in msg.content:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict):
+                    itype = item.get("type", "")
+                    if itype == "text":
+                        parts.append(item.get("text", ""))
+                    elif itype in ("image_url", "image", "file", "file_url"):
+                        target = item.get("image_url") or item.get("file") or item.get("url") or ""
+                        raw_url = target if isinstance(target, str) else (target.get("url", "") if isinstance(target, dict) else "")
+                        if not raw_url and isinstance(target, dict):
+                            raw_url = target.get("image_url", "")
+
+                        if isinstance(raw_url, str) and raw_url.startswith("data:"):
+                            match = re.match(r"^data:([^;]+);base64,(.+)$", raw_url)
+                            if match:
+                                mime = match.group(1).lower()
+                                b64_data = match.group(2)
+                                ext = mimetypes.guess_extension(mime) or (".png" if "image" in mime else ".bin")
+                                if ext == ".jpe":
+                                    ext = ".jpg"
+                                tmp_path = TEMP_UPLOADS_DIR / f"upload_{int(time.time())}_{uuid.uuid4().hex[:8]}{ext}"
+                                try:
+                                    tmp_path.write_bytes(base64.b64decode(b64_data))
+                                    file_paths.append(str(tmp_path))
+                                    temp_files.append(str(tmp_path))
+                                except Exception as b64_err:
+                                    print(f"[!] Base64 디코딩 실패: {b64_err}")
+                        elif isinstance(raw_url, str) and raw_url.startswith("file://"):
+                            local_p = raw_url[7:]
+                            if local_p.startswith("/") and os.name == "nt" and len(local_p) > 2 and local_p[2] == ":":
+                                local_p = local_p[1:]
+                            if os.path.isfile(local_p):
+                                file_paths.append(local_p)
+                        elif isinstance(raw_url, str) and os.path.isfile(raw_url):
+                            file_paths.append(raw_url)
+                    elif itype == "file_path":
+                        p = item.get("path", "")
+                        if isinstance(p, str) and os.path.isfile(p):
+                            file_paths.append(p)
+            text_content = " ".join(parts).strip()
+
+        if text_content:
+            prompt_parts.append(f"{role_prefix}: {text_content}")
+
+    prompt = "\n\n".join(prompt_parts)
+    return prompt, file_paths, temp_files
+
+
+def format_messages_to_prompt(messages: List[ChatMessage], model_name: str) -> str:
+    """하위 호환성을 위한 텍스트 프롬프트 변환기"""
+    prompt, _, _ = parse_messages_and_files(messages, model_name)
+    return prompt
+
 
 @app.post("/v1/chat/completions")
 async def chat_completions(req: ChatCompletionRequest, request: Request):
@@ -290,7 +365,7 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
     source, client_app, client_version = _detect_source(request)
     client_ip = request.client.host if request.client else ""
 
-    prompt = format_messages_to_prompt(req.messages, req.model or "gpt-5.6-sol")
+    prompt, file_paths, temp_files = parse_messages_and_files(req.messages, req.model or "gpt-5.6-sol")
     prompt_bytes = len(prompt.encode("utf-8", errors="ignore"))
     request_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created_ts = int(time.time())
@@ -307,7 +382,7 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
                 }
                 yield f"data: {json.dumps(first_chunk, ensure_ascii=False)}\n\n"
 
-                async for token in engine.stream_query(prompt, reset_chat=True, source=source,
+                async for token in engine.stream_query(prompt, reset_chat=True, file_paths=file_paths, source=source,
                                                         client_app=client_app, client_version=client_version,
                                                         prompt_bytes=prompt_bytes, ip_addr=client_ip):
                     chunk_data = {
@@ -340,6 +415,8 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
                 }
                 yield f"data: {json.dumps(err_chunk, ensure_ascii=False)}\n\n"
                 yield "data: [DONE]\n\n"
+            finally:
+                cleanup_temp_files(temp_files)
 
         return StreamingResponse(
             event_generator(),
@@ -348,7 +425,7 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
         )
     else:
         try:
-            full_response = await engine.query(prompt, source=source,
+            full_response = await engine.query(prompt, file_paths=file_paths, source=source,
                                                client_app=client_app, client_version=client_version,
                                                prompt_bytes=prompt_bytes, ip_addr=client_ip)
             tokens_est = max(1, int(len(full_response.encode("utf-8")) / 4.2))
@@ -373,6 +450,8 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
             err_msg = f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()}"
             print(f"[!] Copilot 브릿지 실행 오류:\n{err_msg}")
             raise HTTPException(status_code=500, detail=f"[디버그] {type(e).__name__}: {str(e)}")
+        finally:
+            cleanup_temp_files(temp_files)
 
 @app.get("/api/stream")
 async def api_event_stream(request: Request):

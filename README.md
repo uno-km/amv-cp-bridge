@@ -7,7 +7,7 @@
 [English](#english) | 한국어 | [🤖 FOR_AI_README (AI 전용 운영 매뉴얼)](FOR_AI_README.md)
 
 <p>
-  <img src="https://img.shields.io/badge/v1.1.0-blue?style=flat-square" alt="version">
+  <img src="https://img.shields.io/badge/v1.2.0-blue?style=flat-square" alt="version">
   <img src="https://img.shields.io/badge/Windows%20%7C%20macOS-supported-green?style=flat-square" alt="platform">
   <img src="https://img.shields.io/badge/License-Apache--2.0-blue?style=flat-square" alt="license">
   <img src="https://img.shields.io/badge/Tokens%20Cost-%240.00%20(Unlimited%20Free)-success?style=flat-square" alt="zero-cost">
@@ -400,7 +400,12 @@ rm -rf ~/.amv_cp_bridge ~/copilot_profile_default ~/copilot_profile_secondary ~/
 ### 꿀팁 3: DALL-E 3 고화질 이미지 생성 무료 꿀빨기
 - 챗봇 사이트 로그인 필요 없이, 확장프로그램이나 API로 **"귀여운 사이버펑크 고양이 일러스트 그려줘"** 한 줄만 던지면 백그라운드 DALL-E 3 / Designer 엔진이 30~50초 만에 고화질 이미지를 즉시 생성합니다.
 
-### 꿀팁 4: 0MB 메모리 무손실 라이프사이클 vs 핫로딩 (Cold 0MB & Hot Standby)
+### 꿀팁 4: 멀티모달 비전 및 이미지/문서 파일 자동 분석 (v1.2.0)
+- OpenAI 표준 비전 규격(`{"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}`)을 지원합니다.
+- Cursor나 Continue.dev에서 UI 디자인 스크린샷이나 에러 캡처 화면을 던지면, 백그라운드 Copilot에 파일을 자동으로 주입하여 이미지를 분석하고 코드를 작성해줍니다.
+- 로컬 파일 경로 및 PDF 문서 업로드도 자동으로 지원합니다.
+
+### 꿀팁 5: 0MB 메모리 무손실 라이프사이클 vs 핫로딩 (Cold 0MB & Hot Standby)
 - 크롬이나 엣지 창 여러 개 띄워놓고 까먹으면 램 4GB~8GB 금방 날아가죠?
 - `amv-cp-bridge`는 기본적으로 **단발성 즉시종료(Cold Launch / Ephemeral)** 아키텍처로 설계되어 질의가 끝나면 백그라운드 엣지 프로세스를 가차 없이 강제 종료하여 **유휴 메모리 0MB**를 칼같이 유지합니다.
 - **v1.1.0 신기능**: GUI 및 대시보드의 **[⚙️ 설정]** 탭에서 **핫로딩 (Hot Standby / 웜 스탠바이)** 모드를 활성화할 수 있습니다! 연속 질문 시 브라우저 재기동 없이 **5초 미만 초고속 응답**과 대화 맥락이 유지되며, 설정된 초(예: 300초) 동안 추가 요청이 없으면 메모리 누수 방지를 위해 **자동으로 브라우저를 종료하고 0MB로 회수**합니다.
@@ -614,7 +619,12 @@ rm -rf ~/.amv_cp_bridge ~/copilot_profile_default ~/copilot_profile_secondary ~/
 ### Tip 3: High-Resolution DALL-E 3 Image Generation
 - Send prompts like `"Create a high-detail cyberpunk cat illustration"` via API or browser extension to trigger native Designer / DALL-E 3 synthesis.
 
-### Tip 4: 0MB Idle RAM vs Hot Standby (Cold 0MB & Warm Standby)
+### Tip 4: Multimodal Vision & Document Ingestion (New in v1.2.0)
+- Full support for the OpenAI Vision specification (`{"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}`).
+- Drop UI screenshots or error traces from Cursor, Continue.dev, or Python scripts; `amv-cp-bridge` automatically injects the payload into the background Copilot web session, analyzes the image, and streams generated code.
+- Supports local file paths and PDF attachments with automatic temporary file cleanup.
+
+### Tip 5: 0MB Idle RAM vs Hot Standby (Cold 0MB & Warm Standby)
 - Unlike traditional Selenium/Puppeteer daemons that hog gigabytes of RAM, `amv-cp-bridge` defaults to an **Ephemeral Cold Launch** architecture, terminating browser process trees upon query completion to maintain a 0MB background memory footprint.
 - **New in v1.1.0**: You can now enable **Hot Standby** in the [⚙️ Settings] tab to keep Edge alive for a customizable standby window (e.g. 300s). This enables ultra-fast consecutive responses (<5s) and preserves session context, while automatically reclaiming RAM to 0MB when idle.
 

@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.2.0
+
+### Added
+- **Multimodal Vision & File Attachment Support**: Full OpenAI-compatible multimodal input support for `/v1/chat/completions`:
+  - Accepts `content` as an array of items (`{"type": "text", "text": "..."}` and `{"type": "image_url", "image_url": {"url": "data:image/...;base64,..."}}`).
+  - Supports Base64 data URLs for PNG, JPEG, GIF, WEBP images and PDF documents.
+  - Automatically decodes and persists payloads into secure local temporary files (`~/.amv_cp_bridge/temp_uploads/`).
+  - Automates file attachment via Playwright CDP file injection (`page.set_input_files('input[type="file"]')`) directly into the active Copilot web session.
+  - Automatic post-query cleanup guarantees zero disk leakage (`cleanup_temp_files`).
+- **Direct Local File Path Ingestion**: Supports local file paths and `file://` URLs in `content` items (`{"type": "file_path", "path": "..."}`).
+
 ## 1.1.0
 
 ### Added

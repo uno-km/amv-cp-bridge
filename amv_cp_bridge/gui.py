@@ -1384,6 +1384,19 @@ p{{margin:.6em 0}}
         mode_seg.configure(values=[T("cfg_mode_cold"), T("cfg_mode_hot")])
         mode_seg.set(T("cfg_mode_cold") if current_mode_var.get() == "cold" else T("cfg_mode_hot"))
 
+        tab_titles = {
+            "📊 대시보드": T("tab_dash"),
+            "📈 사용량": T("tab_usage"),
+            "⚙️ 설정": T("tab_settings"),
+            "📖 사용방법": T("tab_howto"),
+            "🙋 만든이": T("tab_about"),
+        }
+        for orig_key, new_text in tab_titles.items():
+            if hasattr(tab_frame, "_segmented_button") and hasattr(tab_frame._segmented_button, "_buttons_dict"):
+                b = tab_frame._segmented_button._buttons_dict.get(orig_key)
+                if b:
+                    b.configure(text=new_text)
+
     lang_btn.configure(command=toggle_lang)
 
     # ── SSE 구독 스레드 ──────────────────────────────────────────

@@ -130,7 +130,25 @@ async def get_copilot_status() -> str:
     except Exception as e:
         return f"[연결 대기/오류]: 상태 점검 실패. 서버 로그를 확인하십시오."
 
+def _print_startup_banner() -> None:
+    """MCP 서버 시작 시 stderr에 상태 배너 출력 (stdout은 MCP JSON-RPC 전용)."""
+    import datetime
+    now = datetime.datetime.now().strftime("%H:%M:%S")
+    lines = [
+        "",
+        "┌─────────────────────────────────────────┐",
+        "│   AMV-CP-BRIDGE  MCP Server  ✓ 가동 중  │",
+        f"│   시작 시각: {now}                    │",
+        "│   Copilot 365 · DeepThink · FastMCP     │",
+        "└─────────────────────────────────────────┘",
+        "",
+    ]
+    for line in lines:
+        print(line, file=sys.stderr, flush=True)
+
+
 def run_server():
+    _print_startup_banner()
     mcp.run()
 
 if __name__ == "__main__":

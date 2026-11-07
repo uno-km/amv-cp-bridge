@@ -478,7 +478,28 @@ class CopilotWorker:
                 await self.cleanup()
                 self.kill_browser_process()
 
-    async def stream_query(self, prompt: str, reset_chat: bool = True) -> AsyncGenerator[str, None]:
+    async def _attach_files(self, page: Page, file_paths: List[str]):
+        """Copilot 웹페이지 입력창에 이미지 및 파일을 안전하게 첨부"""
+        valid_files = [str(Path(f).resolve()) for f in file_paths if os.path.isfile(f)]
+        if not valid_files:
+            return
+
+        print(f"[*] [{self.name}] 파일 {len(valid_files)}개 첨부 시도: {[Path(f).name for f in valid_files]}")
+        try:
+            file_input = page.locator('input[type="file"]')
+            if await file_input.count() == 0:
+                triggers = page.locator('button[aria-label*="첨부"], button[aria-label*="Attach"], button[aria-label*="Add"], button[title*="첨부"], button[title*="Attach"], button[title*="Add"]')
+                if await triggers.count() > 0:
+                    await triggers.first.click()
+                    await asyncio.sleep(0.5)
+
+            await page.set_input_files('input[type="file"]', valid_files, timeout=6000)
+            print(f"[+] [{self.name}] 파일 업로드 주입 완료. 프리뷰 렌더링 대기...")
+            await asyncio.sleep(2.5)
+        except Exception as exc:
+            print(f"[!] [{self.name}] 파일 첨부 중 경고 (텍스트 질의 계속 진행): {exc}")
+
+    async def stream_query(self, prompt: str, reset_chat: bool = True, file_paths: Optional[List[str]] = None) -> AsyncGenerator[str, None]:
         """질문을 던지고 실시간 스트리밍 텍스트 델타를 yield"""
         async with self._lock:
             self._cancel_standby()
@@ -494,6 +515,9 @@ class CopilotWorker:
 
                 if reset_chat:
                     await self.new_chat()
+
+                if file_paths:
+                    await self._attach_files(page, file_paths)
 
                 await self._submit_prompt(page, prompt)
                 self._set_login_state("ok")
@@ -555,9 +579,9 @@ class CopilotWorker:
                 else:
                     self._schedule_standby()
 
-    async def query(self, prompt: str) -> str:
+    async def query(self, prompt: str, file_paths: Optional[List[str]] = None) -> str:
         collected = []
-        async for chunk in self.stream_query(prompt):
+        async for chunk in self.stream_query(prompt, file_paths=file_paths):
             collected.append(chunk)
         return "".join(collected).strip()
 
@@ -767,8 +791,8 @@ class CopilotPool:
         """이벤트 발행 (동기 컨텍스트에서도 안전하게 호출)."""
         event_bus.publish(event)
 
-    async def stream_query(self, prompt: str, reset_chat: bool = True, source: str = "api",
-                           client_app: str = "", client_version: str = "",
+    async def stream_query(self, prompt: str, reset_chat: bool = True, file_paths: Optional[List[str]] = None,
+                           source: str = "api", client_app: str = "", client_version: str = "",
                            prompt_bytes: int = 0, ip_addr: str = "") -> AsyncGenerator[str, None]:
         task_id = uuid.uuid4().hex[:10]
         preview = (prompt[:60] + "…") if len(prompt) > 60 else prompt
@@ -805,7 +829,7 @@ class CopilotPool:
                 collected_chunks: list = []
                 success = True
                 try:
-                    async for chunk in worker.stream_query(prompt, reset_chat=reset_chat):
+                    async for chunk in worker.stream_query(prompt, reset_chat=reset_chat, file_paths=file_paths):
                         collected_bytes += len(chunk.encode("utf-8", errors="ignore"))
                         collected_chunks.append(chunk)
                         yield chunk
@@ -842,8 +866,8 @@ class CopilotPool:
                 self.current_task = None
                 self.task_start_time = None
 
-    async def query(self, prompt: str, source: str = "api",
-                    client_app: str = "", client_version: str = "",
+    async def query(self, prompt: str, file_paths: Optional[List[str]] = None,
+                    source: str = "api", client_app: str = "", client_version: str = "",
                     prompt_bytes: int = 0, ip_addr: str = "") -> str:
         task_id = uuid.uuid4().hex[:10]
         preview = (prompt[:60] + "…") if len(prompt) > 60 else prompt
@@ -878,7 +902,7 @@ class CopilotPool:
                 success = True
                 res = ""
                 try:
-                    res = await worker.query(prompt)
+                    res = await worker.query(prompt, file_paths=file_paths)
                     return res
                 except Exception as e:
                     success = False
