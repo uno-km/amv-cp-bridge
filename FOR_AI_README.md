@@ -69,6 +69,7 @@ The operator's organization has already paid for M365 Copilot at the enterprise 
 | `~/copilot_profile_default/` | Edge profile — M365 session cookies reside here |
 | `~/copilot_profile_secondary/` | Second account profile (if configured) |
 | `~/.amv_cp_bridge/crash.log` | Written on unhandled exception at startup |
+| `~/.amv_cp_bridge/temp_uploads/` | Ephemeral scratch directory for decoded base64 vision images (auto-cleaned) |
 
 ---
 
@@ -820,6 +821,51 @@ $env:COPILOT_EPHEMERAL_MODE = "true"
 # Or: manually purge accumulated processes
 amv-cp-bridge purge
 ```
+
+---
+
+### [ERR-026] Entra ID Silent Session Revocation & Fast-Fail (v1.2.1)
+
+**Symptom:** Client request hangs on open sockets for 45+ seconds after corporate token expiration, or yields generic timeout errors.
+**Cause:** M365 Conditional Access silently redirects idle CDP sessions to `login.microsoftonline.com`, `/kmsi`, or `/oauth2/v2.0/authorize`.
+**Autonomous Resolution:**
+1. Engine v1.2.1 features sub-1.5s URL inspection. If redirected to a login gate, it instantly fires a clean `401 Unauthorized` (`{"error": {"type": "authentication_error", "code": "session_expired"}}`) and dispatches an OS tray notification.
+2. When the agent receives a 401 error, run:
+```powershell
+python -m amv_cp_bridge.cli ask "Hello"
+```
+Or trigger browser authentication via `POST /api/open-login/9334` to let the operator re-auth.
+
+---
+
+### [ERR-027] Multimodal Vision & Local Base64 Ingestion (v1.2.0)
+
+**Symptom:** Sending image files or base64 data URLs throws payload errors or gets stripped.
+**Autonomous Resolution:**
+Pass standard OpenAI array format:
+```json
+{
+  "model": "copilot-gpt4o",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {"type": "text", "text": "Analyze this architecture diagram"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0..."}}
+      ]
+    }
+  ]
+}
+```
+The gateway automatically extracts the base64 payload into `~/.amv_cp_bridge/temp_uploads/`, triggers `page.set_input_files()`, and deletes the scratch file immediately upon query finish.
+
+---
+
+### [ERR-028] Copilot Designer Image Generation Streaming Timeout (v1.2.1)
+
+**Symptom:** Querying image synthesis ("Generate an image of...") causes streaming timeout because `innerText` contains no text while Designer finishes rendering.
+**Autonomous Resolution:**
+v1.2.1 extracts generated DOM `<img>` tags (`data:image/` or `blob:`) and formats them into Markdown `![alt](url)`. As an agent, expect the final Markdown image link in the stream.
 
 ---
 
