@@ -409,14 +409,28 @@ class CopilotWorker:
         await self.ensure_model_selected(page)
         return True
 
-    async def _wait_for_composer(self, page: Page, timeout: float = COMPOSER_TIMEOUT_SEC) -> bool:
-        """로그인 리다이렉트가 끝나고 Copilot 입력창이 보일 때까지 대기한다."""
+    async def _wait_for_composer(self, page: Page, timeout: float = COMPOSER_TIMEOUT_SEC, fast_fail: bool = True) -> bool:
+        """로그인 리다이렉트가 끝나고 Copilot 입력창이 보일 때까지 대기한다.
+        fast_fail=True인 경우, Entra ID/Conditional Access 리디렉션 감지 시 불필요한 45초 지연을 방지하고 1.5초 내 Fast-Fail을 수행한다.
+        """
         deadline = time.time() + timeout
         textbox = page.locator(COMPOSER_SELECTOR).first
+        login_detected_start: Optional[float] = None
         while time.time() < deadline:
-            if not _is_login_url(page.url) and await textbox.is_visible():
+            current_url = page.url
+            if not _is_login_url(current_url) and await textbox.is_visible():
                 return True
-            await asyncio.sleep(0.5)
+
+            if fast_fail and _is_login_url(current_url):
+                if login_detected_start is None:
+                    login_detected_start = time.time()
+                elif time.time() - login_detected_start >= 1.5:
+                    print(f"[!] [{self.name}] [Fast-Fail] Entra ID 로그인 리디렉션 감지: {current_url[:120]}")
+                    return False
+            else:
+                login_detected_start = None
+
+            await asyncio.sleep(0.3)
         return False
 
     async def _submit_prompt(self, page: Page, prompt: str):
@@ -467,7 +481,7 @@ class CopilotWorker:
                 self.kill_browser_process()
                 await self.ensure_running(visible=True)
                 page = await self.connect()
-                connected = await self._wait_for_composer(page, timeout)
+                connected = await self._wait_for_composer(page, timeout, fast_fail=False)
                 self._set_login_state("ok" if connected else "required")
                 return connected
             except Exception as exc:

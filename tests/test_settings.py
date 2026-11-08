@@ -11,7 +11,7 @@ from amv_cp_bridge.engine import CopilotPool
 
 class TestSettings(unittest.TestCase):
     def test_version(self):
-        self.assertEqual(__version__, "1.2.0")
+        self.assertEqual(__version__, "1.2.1")
 
     def test_load_default(self):
         settings = load_settings()

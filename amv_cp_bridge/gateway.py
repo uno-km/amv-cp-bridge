@@ -32,7 +32,8 @@ from pydantic import BaseModel, Field
 from collections import defaultdict
 
 from ._version import __version__
-from .engine import CopilotEngine, event_bus
+from .engine import CopilotEngine, CopilotLoginRequired, event_bus
+from .notifications import notify_login_required
 from .telemetry_db import telemetry_db
 
 # --- Rate Limiter (per-IP, token bucket) ---
@@ -403,6 +404,23 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
                 }
                 yield f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n"
                 yield "data: [DONE]\n\n"
+            except CopilotLoginRequired as e:
+                import traceback
+                print(f"[!] Copilot 재인증 필요 (Fast-Fail): {e}")
+                notify_login_required(str(e))
+                err_chunk = {
+                    "id": request_id,
+                    "object": "chat.completion.chunk",
+                    "created": created_ts,
+                    "model": req.model,
+                    "error": {
+                        "message": str(e),
+                        "type": "authentication_error",
+                        "code": "session_expired"
+                    }
+                }
+                yield f"data: {json.dumps(err_chunk, ensure_ascii=False)}\n\n"
+                yield "data: [DONE]\n\n"
             except Exception as e:
                 import traceback
                 print(f"[!] 스트리밍 질의 오류: {type(e).__name__}: {e}\n{traceback.format_exc()}")
@@ -445,6 +463,18 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
                     "total_tokens": len(prompt.split()) + tokens_est
                 }
             }
+        except CopilotLoginRequired as e:
+            notify_login_required(str(e))
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error": {
+                        "message": str(e),
+                        "type": "authentication_error",
+                        "code": "session_expired"
+                    }
+                }
+            )
         except Exception as e:
             import traceback
             err_msg = f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()}"

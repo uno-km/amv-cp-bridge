@@ -7,7 +7,7 @@
 [English](#english) | 한국어 | [🤖 FOR_AI_README (AI 전용 운영 매뉴얼)](FOR_AI_README.md)
 
 <p>
-  <img src="https://img.shields.io/badge/v1.2.0-blue?style=flat-square" alt="version">
+  <img src="https://img.shields.io/badge/v1.2.1-blue?style=flat-square" alt="version">
   <img src="https://img.shields.io/badge/Windows%20%7C%20macOS-supported-green?style=flat-square" alt="platform">
   <img src="https://img.shields.io/badge/License-Apache--2.0-blue?style=flat-square" alt="license">
   <img src="https://img.shields.io/badge/Tokens%20Cost-%240.00%20(Unlimited%20Free)-success?style=flat-square" alt="zero-cost">
