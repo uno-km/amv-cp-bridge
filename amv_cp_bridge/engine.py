@@ -20,6 +20,13 @@ import urllib.request
 from pathlib import Path
 from typing import Optional, AsyncGenerator, List, Dict, Any
 
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
 try:
     from .telemetry_db import telemetry_db
 except (ImportError, ValueError):
@@ -139,14 +146,14 @@ class CopilotWorker:
         except RuntimeError:
             loop = asyncio.get_event_loop()
         self._standby_task = loop.create_task(self._standby_countdown())
-        print(f"[*] [{self.name}] 🔥 핫로딩 모드: 웜 스탠바이 대기 중 ({self.standby_timeout_sec}초 유지)")
+        print(f"[*] [{self.name}] [Hot] 핫로딩 모드: 웜 스탠바이 대기 중 ({self.standby_timeout_sec}초 유지)")
 
     async def _standby_countdown(self):
         """스탠바이 시간 경과 후 프로세스 회수"""
         try:
             await asyncio.sleep(self.standby_timeout_sec)
             if not self.is_busy():
-                print(f"[+] [{self.name}] ⏱️ 웜 스탠바이({self.standby_timeout_sec}초) 만료 — Edge 프로세스 완전 종료 (0MB 회수)")
+                print(f"[+] [{self.name}] [Standby] 웜 스탠바이({self.standby_timeout_sec}초) 만료 — Edge 프로세스 완전 종료 (0MB 회수)")
                 await self.cleanup()
                 self.kill_browser_process()
                 self._standby_deadline = None
@@ -542,16 +549,41 @@ class CopilotWorker:
                 start_gen = time.time()
 
                 while time.time() - start_gen < timeout:
-                    info = await page.evaluate("""() => {
+                    info = await page.evaluate(r"""() => {
                         const articles = Array.from(document.querySelectorAll('div[role="article"], .fai-CopilotMessage'))
                             .filter(a => !a.classList.contains('fai-UserMessage') && !(a.innerText || '').startsWith('You said'));
                         if (articles.length === 0) return { text: "", isDone: false };
                         const last = articles[articles.length - 1];
                         const copyBtn = last.querySelector('button[aria-label*="복사"], button[title*="복사"], button[aria-label*="Copy"]');
                         const stopBtn = document.querySelector('button[aria-label*="중지"], button[aria-label*="Stop"], button[title*="중지"]');
+
+                        // Extract generated images (e.g. Copilot Designer / DALL-E)
+                        const imgs = Array.from(last.querySelectorAll('img'))
+                            .filter(img => {
+                                if (!img.src) return false;
+                                const isBig = (img.naturalWidth > 100 && img.naturalHeight > 100) || (img.width > 100 && img.height > 100);
+                                const isSpecialSrc = img.src.startsWith('data:image') || img.src.startsWith('blob:') || img.src.includes('dalle') || img.src.includes('th?id=');
+                                return isBig || isSpecialSrc;
+                            })
+                            .map(img => {
+                                const alt = (img.alt || 'Generated Image').replace(/[\\r\\n]+/g, ' ').trim();
+                                return `![${alt}](${img.src})`;
+                            });
+
+                        let text = last.innerText || "";
+                        if (imgs.length > 0) {
+                            const trimmed = text.replace(/^Copilot said:\s*/i, '').trim();
+                            if (trimmed.length > 0) {
+                                text = text + "\\n\\n" + imgs.join("\\n\\n");
+                            } else {
+                                text = "Copilot said:\\n\\n" + imgs.join("\\n\\n");
+                            }
+                        }
+
+                        const hasCompletedImage = imgs.length > 0 && !stopBtn;
                         return {
-                            text: last.innerText || "",
-                            isDone: !!copyBtn && !stopBtn
+                            text: text,
+                            isDone: (!!copyBtn && !stopBtn) || hasCompletedImage
                         };
                     }""")
 
