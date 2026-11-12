@@ -32,8 +32,16 @@ from pydantic import BaseModel, Field
 from collections import defaultdict
 
 from ._version import __version__
-from .engine import CopilotEngine, CopilotLoginRequired, event_bus
+from .engine import (
+    CopilotEngine,
+    CopilotLoginRequired,
+    CopilotPolicyRefusalError,
+    CopilotQuotaError,
+    CopilotTransientError,
+    event_bus,
+)
 from .notifications import notify_login_required
+from .reasoning import ReasoningStreamParser, extract_reasoning_and_content
 from .telemetry_db import telemetry_db
 
 # --- Rate Limiter (per-IP, token bucket) ---
@@ -136,6 +144,10 @@ def _detect_source(request: Request) -> tuple[str, str, str]:
         # MCP이지만 UA로 구분 불가 → claude-desktop 기본
         return "mcp:claude", "claude-desktop", client_version
 
+    # 명시적 X-Bridge-Source 헤더가 있으면 클라이언트 식별자로 보존한다.
+    if hdr_source:
+        return hdr_source, (hdr_client or hdr_source.split(":")[0]), client_version
+
     # UA 기반 감지 (X-Bridge-Source 헤더 없어도)
     for kw, app_id in _SOURCE_MAP.items():
         if kw in ua_lower:
@@ -153,6 +165,9 @@ class ChatCompletionRequest(BaseModel):
     stream: Optional[bool] = False
     temperature: Optional[float] = 0.7
     max_tokens: Optional[int] = None
+    reasoning_effort: Optional[str] = None
+    deepthink: Optional[bool] = None
+    enable_deepthink: Optional[bool] = None
 
 @app.get("/")
 async def root_redirect():
@@ -211,15 +226,16 @@ async def api_record(record_id: int):
 
 @app.post("/api/purge")
 async def api_purge():
-    """잔존 Edge 브라우저 프로세스 0MB 강제 소각"""
+    """잔존 브라우저 프로세스 강제 정리"""
     for w in engine.workers:
-        w.kill_browser_process()
-    return {"ok": True, "message": "모든 Edge 프로세스가 강제 소각되어 0MB로 회수되었습니다."}
+        w.kill_browser_process(force=True)
+    return {"ok": True, "message": "모든 브라우저 프로세스가 정리되어 회수되었습니다."}
 
 class SettingsUpdateRequest(BaseModel):
     mode: Optional[str] = Field(None, description="'cold' or 'hot'")
     standby_timeout_sec: Optional[int] = Field(None, description="Standby timeout in seconds")
     rate_limit_rpm: Optional[int] = Field(None, description="Rate limit RPM")
+    enable_deepthink: Optional[bool] = Field(None, description="Enable Deep Thinking globally")
 
 @app.get("/api/settings")
 async def api_get_settings():
@@ -239,6 +255,8 @@ async def api_update_settings(req: SettingsUpdateRequest):
         data["standby_timeout_sec"] = req.standby_timeout_sec
     if req.rate_limit_rpm is not None:
         data["rate_limit_rpm"] = req.rate_limit_rpm
+    if req.enable_deepthink is not None:
+        data["enable_deepthink"] = req.enable_deepthink
     updated = engine.update_settings(data)
     return {
         "status": "ok",
@@ -256,12 +274,28 @@ async def api_account_login(port: int):
     asyncio.create_task(engine.open_login(port))
     return {"ok": True, "port": port}
 
+
+@app.post("/api/accounts/{port}/close")
+async def api_account_close(port: int):
+    """단일 계정 워커의 CDP 연결 및 브라우저 프로세스를 안전하게 닫는다."""
+    worker = next((w for w in engine.workers if w.port == port), None)
+    if worker is None:
+        raise HTTPException(status_code=404, detail=f"등록되지 않은 계정 포트입니다: {port}")
+    if worker.is_busy():
+        raise HTTPException(status_code=409, detail=f"{worker.name} 계정이 작업 중입니다.")
+    await worker.cleanup()
+    worker.kill_browser_process(force=True)
+    event_bus.publish({"type": "accounts", "event": "closed", "port": port})
+    return {"ok": True, "port": port}
+
 @app.get("/v1/models")
 async def list_models():
     now = int(time.time())
     models = [
         {"id": "gpt-5.6-sol", "object": "model", "created": now, "owned_by": "amv-cp-bridge", "permission": []},
         {"id": "copilot-deepthink", "object": "model", "created": now, "owned_by": "amv-cp-bridge", "permission": []},
+        {"id": "deepseek-r1", "object": "model", "created": now, "owned_by": "amv-cp-bridge", "permission": []},
+        {"id": "o1", "object": "model", "created": now, "owned_by": "amv-cp-bridge", "permission": []},
         {"id": "copilot-standard", "object": "model", "created": now, "owned_by": "amv-cp-bridge", "permission": []}
     ]
     return {"object": "list", "data": models}
@@ -281,15 +315,97 @@ def cleanup_temp_files(file_paths: List[str]):
             pass
 
 
-def parse_messages_and_files(messages: List[ChatMessage], model_name: str) -> Tuple[str, List[str], List[str]]:
+def resolve_is_deepthink(
+    req_deepthink: Optional[bool] = None,
+    req_enable_deepthink: Optional[bool] = None,
+    reasoning_effort: Optional[str] = None,
+    header_deepthink: Optional[str] = None,
+    model_name: Optional[str] = None,
+    global_setting: bool = False
+) -> bool:
+    """Deep Thinking(reasoning_content 분리 및 사고 추론 지시문) 활성화 여부를 결정합니다.
+    우선순위:
+    1. 요청 본문 명시 플래그 (deepthink / enable_deepthink)
+    2. reasoning_effort ('none'/'false' -> OFF, 'low'/'medium'/'high' -> ON)
+    3. HTTP Header (X-DeepThink: true/false)
+    4. 모델명 휴리스틱 (copilot-deepthink, deepseek-r1, o1, o3 -> ON)
+    5. 글로벌 서버 설정 (settings.json의 enable_deepthink)
+    """
+    if req_deepthink is not None:
+        return bool(req_deepthink)
+    if req_enable_deepthink is not None:
+        return bool(req_enable_deepthink)
+
+    if reasoning_effort:
+        re_str = str(reasoning_effort).strip().lower()
+        if re_str in ("none", "false", "off", "0"):
+            return False
+        if re_str in ("low", "medium", "high", "true", "on", "1"):
+            return True
+
+    if header_deepthink:
+        h_str = str(header_deepthink).strip().lower()
+        if h_str in ("false", "0", "off", "no"):
+            return False
+        if h_str in ("true", "1", "on", "yes"):
+            return True
+
+    m_lower = (model_name or "").lower()
+    if any(k in m_lower for k in ("deepthink", "r1", "o1", "o3")):
+        return True
+
+    return bool(global_setting)
+
+
+def _resolve_media_input(raw_url: str, file_paths: List[str], temp_files: List[str]) -> None:
+    """data URI, file:// URL, 또는 로컬 파일 경로를 임시/실제 첨부 파일 목록으로 해석한다."""
+    if not isinstance(raw_url, str) or not raw_url:
+        return
+    if raw_url.startswith("data:"):
+        match = re.match(r"^data:([^;]+);base64,(.+)$", raw_url)
+        if match:
+            mime = match.group(1).lower()
+            b64_data = match.group(2)
+            ext = mimetypes.guess_extension(mime) or (".png" if "image" in mime else ".bin")
+            if ext == ".jpe":
+                ext = ".jpg"
+            tmp_path = TEMP_UPLOADS_DIR / f"upload_{int(time.time())}_{uuid.uuid4().hex[:8]}{ext}"
+            try:
+                tmp_path.write_bytes(base64.b64decode(b64_data))
+                file_paths.append(str(tmp_path))
+                temp_files.append(str(tmp_path))
+            except Exception as b64_err:
+                print(f"[!] Base64 디코딩 실패: {b64_err}")
+    elif raw_url.startswith("file://"):
+        local_p = raw_url[7:]
+        if local_p.startswith("/") and os.name == "nt" and len(local_p) > 2 and local_p[2] == ":":
+            local_p = local_p[1:]
+        if os.path.isfile(local_p):
+            file_paths.append(local_p)
+    elif os.path.isfile(raw_url):
+        file_paths.append(raw_url)
+
+
+def parse_messages_and_files(
+    messages: List[ChatMessage],
+    model_name: str,
+    reasoning_effort: Optional[str] = None,
+    is_reasoning: bool = False
+) -> Tuple[str, List[str], List[str]]:
     """OpenAI Vision 및 멀티턴 메시지를 파싱하여 텍스트 프롬프트, 첨부 파일 목록, 임시 파일 목록을 반환"""
     prompt_parts = []
     file_paths: List[str] = []
     temp_files: List[str] = []
 
-    deepthink = ("deepthink" in model_name.lower()) or ("sol" in model_name.lower())
-    if deepthink:
-        prompt_parts.append("[시스템 지침: 1원리(First-principles) 기반으로 수식 및 코드를 생략 없이 완벽하게 유도하여 작성하시오.]\n")
+    if is_reasoning:
+        prompt_parts.append(
+            "[Structured Reasoning Directive]\n"
+            "Break down your response into two distinct sections:\n"
+            "### 1. Step-by-Step Logical Analysis\n"
+            "(Provide your thorough step-by-step reasoning, intermediate analysis, and hypotheses)\n\n"
+            "### 2. Final Conclusion\n"
+            "(Provide your direct answer and conclusion)\n"
+        )
 
     for msg in messages:
         role_prefix = "[시스템]" if msg.role == "system" else ("[질문]" if msg.role == "user" else "[답변]")
@@ -311,30 +427,8 @@ def parse_messages_and_files(messages: List[ChatMessage], model_name: str) -> Tu
                         raw_url = target if isinstance(target, str) else (target.get("url", "") if isinstance(target, dict) else "")
                         if not raw_url and isinstance(target, dict):
                             raw_url = target.get("image_url", "")
-
-                        if isinstance(raw_url, str) and raw_url.startswith("data:"):
-                            match = re.match(r"^data:([^;]+);base64,(.+)$", raw_url)
-                            if match:
-                                mime = match.group(1).lower()
-                                b64_data = match.group(2)
-                                ext = mimetypes.guess_extension(mime) or (".png" if "image" in mime else ".bin")
-                                if ext == ".jpe":
-                                    ext = ".jpg"
-                                tmp_path = TEMP_UPLOADS_DIR / f"upload_{int(time.time())}_{uuid.uuid4().hex[:8]}{ext}"
-                                try:
-                                    tmp_path.write_bytes(base64.b64decode(b64_data))
-                                    file_paths.append(str(tmp_path))
-                                    temp_files.append(str(tmp_path))
-                                except Exception as b64_err:
-                                    print(f"[!] Base64 디코딩 실패: {b64_err}")
-                        elif isinstance(raw_url, str) and raw_url.startswith("file://"):
-                            local_p = raw_url[7:]
-                            if local_p.startswith("/") and os.name == "nt" and len(local_p) > 2 and local_p[2] == ":":
-                                local_p = local_p[1:]
-                            if os.path.isfile(local_p):
-                                file_paths.append(local_p)
-                        elif isinstance(raw_url, str) and os.path.isfile(raw_url):
-                            file_paths.append(raw_url)
+                        if isinstance(raw_url, str):
+                            _resolve_media_input(raw_url, file_paths, temp_files)
                     elif itype == "file_path":
                         p = item.get("path", "")
                         if isinstance(p, str) and os.path.isfile(p):
@@ -366,7 +460,23 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
     source, client_app, client_version = _detect_source(request)
     client_ip = request.client.host if request.client else ""
 
-    prompt, file_paths, temp_files = parse_messages_and_files(req.messages, req.model or "gpt-5.6-sol")
+    global_dt = bool(engine.settings.get("enable_deepthink", False))
+    hdr_dt = request.headers.get("X-DeepThink")
+    is_thinking_model = resolve_is_deepthink(
+        req_deepthink=req.deepthink,
+        req_enable_deepthink=req.enable_deepthink,
+        reasoning_effort=req.reasoning_effort,
+        header_deepthink=hdr_dt,
+        model_name=req.model,
+        global_setting=global_dt
+    )
+
+    prompt, file_paths, temp_files = parse_messages_and_files(
+        req.messages,
+        req.model or "gpt-5.6-sol",
+        req.reasoning_effort,
+        is_reasoning=is_thinking_model
+    )
     prompt_bytes = len(prompt.encode("utf-8", errors="ignore"))
     request_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created_ts = int(time.time())
@@ -383,17 +493,44 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
                 }
                 yield f"data: {json.dumps(first_chunk, ensure_ascii=False)}\n\n"
 
+                parser = ReasoningStreamParser(force_thinking_mode=is_thinking_model)
+                accumulated_text = ""
+
                 async for token in engine.stream_query(prompt, reset_chat=True, file_paths=file_paths, source=source,
                                                         client_app=client_app, client_version=client_version,
                                                         prompt_bytes=prompt_bytes, ip_addr=client_ip):
-                    chunk_data = {
-                        "id": request_id,
-                        "object": "chat.completion.chunk",
-                        "created": created_ts,
-                        "model": req.model,
-                        "choices": [{"index": 0, "delta": {"content": token}, "finish_reason": None}]
-                    }
-                    yield f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n"
+                    accumulated_text += token
+                    r_delta, c_delta = parser.feed(accumulated_text)
+
+                    if r_delta:
+                        chunk_data = {
+                            "id": request_id,
+                            "object": "chat.completion.chunk",
+                            "created": created_ts,
+                            "model": req.model,
+                            "choices": [{"index": 0, "delta": {"reasoning_content": r_delta}, "finish_reason": None}]
+                        }
+                        yield f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n"
+
+                    if c_delta:
+                        chunk_data = {
+                            "id": request_id,
+                            "object": "chat.completion.chunk",
+                            "created": created_ts,
+                            "model": req.model,
+                            "choices": [{"index": 0, "delta": {"content": c_delta}, "finish_reason": None}]
+                        }
+                        yield f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n"
+
+                    if not r_delta and not c_delta and not parser.has_detected_reasoning:
+                        chunk_data = {
+                            "id": request_id,
+                            "object": "chat.completion.chunk",
+                            "created": created_ts,
+                            "model": req.model,
+                            "choices": [{"index": 0, "delta": {"content": token}, "finish_reason": None}]
+                        }
+                        yield f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n"
 
                 final_chunk = {
                     "id": request_id,
@@ -447,6 +584,14 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
                                                client_app=client_app, client_version=client_version,
                                                prompt_bytes=prompt_bytes, ip_addr=client_ip)
             tokens_est = max(1, int(len(full_response.encode("utf-8")) / 4.2))
+            if is_thinking_model:
+                reasoning_part, content_part = extract_reasoning_and_content(full_response)
+            else:
+                reasoning_part, content_part = None, full_response
+            msg_obj: Dict[str, Any] = {"role": "assistant", "content": content_part}
+            if reasoning_part:
+                msg_obj["reasoning_content"] = reasoning_part
+
             return {
                 "id": request_id,
                 "object": "chat.completion",
@@ -454,7 +599,7 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
                 "model": req.model,
                 "choices": [{
                     "index": 0,
-                    "message": {"role": "assistant", "content": full_response},
+                    "message": msg_obj,
                     "finish_reason": "stop"
                 }],
                 "usage": {
@@ -482,6 +627,91 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
             raise HTTPException(status_code=500, detail=f"[디버그] {type(e).__name__}: {str(e)}")
         finally:
             cleanup_temp_files(temp_files)
+
+
+class ImageGenerationRequest(BaseModel):
+    prompt: str
+    model: Optional[str] = "copilot-image"
+    n: Optional[int] = 1
+    reference_images: List[str] = Field(default_factory=list)
+    timeout_sec: float = 240.0
+    min_bytes: int = 50_000
+    reset_chat: bool = True
+
+
+@app.post("/v1/images/generations")
+async def images_generations(req: ImageGenerationRequest, request: Request):
+    """브라우저 컨텍스트에서 Copilot 이미지 생성을 수행하고 Base64 이미지를 반환한다."""
+    client_ip = request.client.host if request.client else "unknown"
+    if not _rate_limiter.is_allowed(client_ip):
+        raise HTTPException(status_code=429, detail=f"요청 속도 제한 초과 (최대 {_RATE_LIMIT_RPM}회/분)")
+
+    prompt = (req.prompt or "").strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="prompt 필드가 비어있습니다.")
+
+    source, client_app, client_version = _detect_source(request)
+    if req.model and source == "openai:api":
+        source = f"image:{req.model}"
+    req_ip = request.client.host if request.client else ""
+    prompt_bytes = len(prompt.encode("utf-8", errors="ignore"))
+
+    file_paths: List[str] = []
+    temp_files: List[str] = []
+    for raw_ref in req.reference_images:
+        _resolve_media_input(raw_ref, file_paths, temp_files)
+
+    try:
+        out = await engine.generate_image(
+            prompt,
+            file_paths=file_paths,
+            reset_chat=req.reset_chat,
+            source=source,
+            client_app=client_app,
+            client_version=client_version,
+            prompt_bytes=prompt_bytes,
+            ip_addr=req_ip,
+            timeout_sec=max(30.0, min(float(req.timeout_sec), 600.0)),
+            min_bytes=max(1024, int(req.min_bytes)),
+        )
+        return {
+            "created": int(time.time()),
+            "model": req.model or "copilot-image",
+            "worker_port": out.get("worker_port"),
+            "text": out.get("text", ""),
+            "data": [
+                {
+                    "b64_json": im["b64_json"],
+                    "mime_type": im.get("mime_type", "image/png"),
+                    "sha256": im.get("sha256", ""),
+                    "bytes_len": im.get("bytes_len", 0),
+                }
+                for im in out.get("images", [])
+            ],
+        }
+    except CopilotLoginRequired as e:
+        notify_login_required(str(e))
+        raise HTTPException(
+            status_code=401,
+            detail={"error": {"message": str(e), "type": "authentication_error", "code": "session_expired"}},
+        )
+    except CopilotPolicyRefusalError as e:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": {"message": str(e), "type": "policy_refusal", "code": "content_policy_refusal"}},
+        )
+    except (CopilotQuotaError, CopilotTransientError) as e:
+        raise HTTPException(
+            status_code=429,
+            detail={"error": {"message": str(e), "type": "rate_limit_error", "code": "quota_or_transient"}},
+        )
+    except Exception as e:
+        import traceback
+        print(f"[!] 이미지 생성 브릿지 실행 오류:\n{type(e).__name__}: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=502, detail=f"[{type(e).__name__}] {str(e)}")
+    finally:
+        cleanup_temp_files(temp_files)
+
 
 @app.get("/api/stream")
 async def api_event_stream(request: Request):
@@ -598,6 +828,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .btn-save{background:var(--p);color:#fff;border:none;padding:10px 22px;border-radius:10px;font-weight:700;font-size:.9rem;cursor:pointer;transition:.15s}
     .btn-save:hover{background:#4f46e5}
     .save-alert{display:inline-block;margin-left:12px;font-size:.82rem;font-weight:600;color:var(--g)}
+    .switch{position:relative;display:inline-block;width:44px;height:24px;flex-shrink:0}
+    .switch input{opacity:0;width:0;height:0}
+    .slider{position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background-color:#cbd5e1;transition:.25s;border-radius:24px}
+    .slider:before{position:absolute;content:"";height:18px;width:18px;left:3px;bottom:3px;background-color:#fff;transition:.25s;border-radius:50%}
+    .switch input:checked + .slider{background-color:var(--p)}
+    .switch input:checked + .slider:before{transform:translateX(20px)}
     /* ── Cards ── */
     .card{background:var(--card);border:1px solid var(--bdr);border-radius:var(--rad);padding:18px 20px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.04)}
     .card-title{font-size:.82rem;font-weight:700;color:var(--m);margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;padding-bottom:10px;border-bottom:1px solid var(--bdr)}
@@ -688,7 +924,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <!-- Top Bar -->
   <header class="topbar">
     <div class="logo-area">
-      <span class="logo-icon">⚡</span>
       <span class="logo-name">amv-cp-bridge</span>
       <span class="logo-ver">v__APP_VERSION__</span>
     </div>
@@ -697,27 +932,27 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <span class="dot" id="liveDot"></span>
         <span id="liveText">Idle</span>
       </div>
-      <button class="flag-btn active" id="btnKo" onclick="setLang('ko')" title="한국어">🇰🇷</button>
-      <button class="flag-btn" id="btnEn" onclick="setLang('en')" title="English">🇺🇸</button>
+      <button class="flag-btn active" id="btnKo" onclick="setLang('ko')" title="한국어">KO</button>
+      <button class="flag-btn" id="btnEn" onclick="setLang('en')" title="English">EN</button>
     </div>
   </header>
 
   <!-- Tab Nav -->
   <nav class="tabnav">
     <div class="tab active" onclick="switchTab('dashboard')" id="tab-dashboard">
-      <span>📊</span><span data-i="tab_dash">대시보드</span>
+      <span data-i="tab_dash">대시보드</span>
     </div>
     <div class="tab" onclick="switchTab('usage')" id="tab-usage">
-      <span>📈</span><span data-i="tab_usage">사용량</span>
+      <span data-i="tab_usage">사용량</span>
     </div>
     <div class="tab" onclick="switchTab('settings')" id="tab-settings">
-      <span>⚙️</span><span data-i="tab_settings">설정</span>
+      <span data-i="tab_settings">설정</span>
     </div>
     <div class="tab" onclick="switchTab('howto')" id="tab-howto">
-      <span>📖</span><span data-i="tab_howto">사용방법</span>
+      <span data-i="tab_howto">사용방법</span>
     </div>
     <div class="tab" onclick="switchTab('about')" id="tab-about">
-      <span>🙋</span><span data-i="tab_about">만든이</span>
+      <span data-i="tab_about">만든이</span>
     </div>
   </nav>
 
@@ -769,9 +1004,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
       <!-- Actions -->
       <div class="action-row">
-        <button class="btn btn-ghost" onclick="refreshAll()">🔄 새로고침</button>
-        <button class="btn btn-ghost" onclick="forcePurge()">🧹 <span data-i="purge_btn">메모리 정리</span></button>
-        <button class="btn btn-danger" onclick="resetStats()">🗑 <span data-i="reset_btn">통계 초기화</span></button>
+        <button class="btn btn-ghost" onclick="refreshAll()">새로고침</button>
+        <button class="btn btn-ghost" onclick="forcePurge()"><span data-i="purge_btn">메모리 정리</span></button>
+        <button class="btn btn-danger" onclick="resetStats()"><span data-i="reset_btn">통계 초기화</span></button>
       </div>
     </div>
 
@@ -799,14 +1034,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <div class="panel" id="panel-howto">
       <div class="card">
         <div class="how-section">
-          <div class="how-h">🚀 <span data-i="ht_start">빠른 시작</span></div>
+          <div class="how-h"><span data-i="ht_start">빠른 시작</span></div>
           <div class="how-step"><div class="step-num">1</div><div class="step-body"><div class="step-title" data-i="ht_s1_title">Edge 로그인</div><div class="step-desc" data-i="ht_s1_desc">Microsoft Edge에서 <code>https://m365.cloud.microsoft/chat</code> 에 로그인하세요.</div></div></div>
           <div class="how-step"><div class="step-num">2</div><div class="step-body"><div class="step-title" data-i="ht_s2_title">계정 설정</div><div class="step-desc" data-i="ht_s2_desc"><code>~/.amv_cp_bridge/accounts.json</code> 파일에 계정 정보를 추가하세요.</div></div></div>
           <div class="how-step"><div class="step-num">3</div><div class="step-body"><div class="step-title" data-i="ht_s3_title">API 사용</div><div class="step-desc" data-i="ht_s3_desc">아래 엔드포인트로 요청을 보내면 됩니다.</div></div></div>
         </div>
 
         <div class="how-section">
-          <div class="how-h">🔗 <span data-i="ht_api">API 엔드포인트</span></div>
+          <div class="how-h"><span data-i="ht_api">API 엔드포인트</span></div>
           <pre><code>POST http://localhost:11500/v1/chat/completions
 
 {
@@ -817,7 +1052,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         </div>
 
         <div class="how-section">
-          <div class="how-h">🧩 <span data-i="ht_mcp">MCP 연동 (Claude Desktop / Cursor)</span></div>
+          <div class="how-h"><span data-i="ht_mcp">MCP 연동 (Claude Desktop / Cursor)</span></div>
           <pre><code>{
   "mcpServers": {
     "copilot": {
@@ -829,7 +1064,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         </div>
 
         <div class="how-section">
-          <div class="how-h">🎛️ <span data-i="ht_modes">추론 모드</span></div>
+          <div class="how-h"><span data-i="ht_modes">추론 모드</span></div>
           <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">
             <span class="mode-tag" data-i="mode_auto">자동 (Auto)</span>
             <span class="mode-tag" data-i="mode_fast">빠름 (Fast)</span>
@@ -840,14 +1075,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         </div>
 
         <div class="how-section">
-          <div class="how-h">🖥️ <span data-i="ht_ext">브라우저 확장프로그램</span></div>
+          <div class="how-h"><span data-i="ht_ext">브라우저 확장프로그램</span></div>
           <div class="how-step"><div class="step-num">1</div><div class="step-body"><div class="step-desc" data-i="ht_ext1"><code>chrome://extensions</code> 또는 <code>whale://extensions</code> 접속</div></div></div>
           <div class="how-step"><div class="step-num">2</div><div class="step-body"><div class="step-desc" data-i="ht_ext2">개발자 모드 ON → "압축해제된 확장 프로그램을 로드합니다" 클릭</div></div></div>
           <div class="how-step"><div class="step-num">3</div><div class="step-body"><div class="step-desc" data-i="ht_ext3">Releases의 <code>amv-cp-bridge-extension.zip</code> 압축 해제 폴더 선택 → <kbd>Ctrl+Shift+Y</kbd> 로 사이드바 열기</div></div></div>
         </div>
 
         <div class="how-section">
-          <div class="how-h">🍎 <span data-i="ht_mac">macOS 설치</span></div>
+          <div class="how-h"><span data-i="ht_mac">macOS 설치</span></div>
           <pre><code>bash &lt;(curl -fsSL https://raw.githubusercontent.com/uno-km/amv-cp-bridge/main/scripts/macos/install.sh)</code></pre>
         </div>
       </div>
@@ -857,24 +1092,24 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <div class="panel" id="panel-about">
       <div class="about-hero">
         <h2>Eunho Kim (uno-km)</h2>
-        <p data-i="about_desc">amv-cp-bridge를 만들고 있습니다.<br>피드백이나 커피 한 잔은 언제나 환영합니다 ☕</p>
+        <p data-i="about_desc">amv-cp-bridge를 만들고 있습니다.<br>피드백이나 문의는 언제나 환영합니다.</p>
       </div>
       <div class="link-grid">
         <a class="link-card" href="https://uno-km.vercel.app/foundation/" target="_blank">
-          <div class="link-icon" style="background:#ede9fe">🌐</div>
+          <div class="link-icon" style="background:#ede9fe">WEB</div>
           <div class="link-info"><div class="lk-name" data-i="lk_site">웹사이트</div><div class="lk-url">uno-km.vercel.app/foundation</div></div>
         </a>
         <a class="link-card" href="https://github.com/uno-km" target="_blank">
-          <div class="link-icon" style="background:#f1f5f9">🐙</div>
+          <div class="link-icon" style="background:#f1f5f9">GIT</div>
           <div class="link-info"><div class="lk-name">GitHub</div><div class="lk-url">github.com/uno-km</div></div>
         </a>
         <a class="link-card" href="https://uno-kim.tistory.com/" target="_blank">
-          <div class="link-icon" style="background:#fff7ed">✍️</div>
+          <div class="link-icon" style="background:#fff7ed">DOC</div>
           <div class="link-info"><div class="lk-name" data-i="lk_blog">블로그</div><div class="lk-url">uno-kim.tistory.com</div></div>
         </a>
         <a class="link-card" href="https://buymeacoffee.com/uno.km" target="_blank">
-          <div class="link-icon" style="background:#fefce8">☕</div>
-          <div class="link-info"><div class="lk-name" data-i="lk_coffee">커피 한 잔</div><div class="lk-url">buymeacoffee.com/uno.km</div></div>
+          <div class="link-icon" style="background:#fefce8">DON</div>
+          <div class="link-info"><div class="lk-name" data-i="lk_coffee">문의 및 후원</div><div class="lk-url">buymeacoffee.com/uno.km</div></div>
         </a>
       </div>
       <div class="card" style="margin-top:16px;text-align:center;color:var(--m);font-size:.78rem;line-height:1.7">
@@ -887,7 +1122,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <div class="panel" id="panel-settings">
       <div class="card">
         <div class="card-title">
-          <span>⚡ <span data-i="cfg_title">브릿지 동작 모드 및 수명 주기 설정</span></span>
+          <span><span data-i="cfg_title">브릿지 동작 모드 및 수명 주기 설정</span></span>
           <span style="font-size:.72rem;background:#ede9fe;color:#7c3aed;padding:2px 8px;border-radius:99px;font-weight:700">v1.1.0</span>
         </div>
 
@@ -897,7 +1132,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <div class="mode-card selected" id="optCold" onclick="selectMode('cold')">
               <div class="mode-card-title">
                 <input type="radio" name="bridgeMode" id="radioCold" checked>
-                <label for="radioCold" style="cursor:pointer" data-i="cfg_mode_cold">❄️ 콜드 유지 (기본값 / 0MB 권장)</label>
+                <label for="radioCold" style="cursor:pointer" data-i="cfg_mode_cold">콜드 유지 (기본값 / 0MB 권장)</label>
               </div>
               <div class="mode-card-desc" data-i="cfg_desc_cold">
                 • 질문-답변 완료 즉시 Edge 브라우저를 완전 강제 종료합니다.<br>
@@ -909,7 +1144,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <div class="mode-card" id="optHot" onclick="selectMode('hot')">
               <div class="mode-card-title">
                 <input type="radio" name="bridgeMode" id="radioHot">
-                <label for="radioHot" style="cursor:pointer" data-i="cfg_mode_hot">🔥 핫로딩 (웜 스탠바이 / 초고속)</label>
+                <label for="radioHot" style="cursor:pointer" data-i="cfg_mode_hot">핫로딩 (웜 스탠바이 / 초고속)</label>
               </div>
               <div class="mode-card-desc" data-i="cfg_desc_hot">
                 • 질문 완료 후에도 설정된 시간 동안 Edge를 켜둔 채 대기합니다.<br>
@@ -933,8 +1168,23 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           </div>
         </div>
 
+        <div class="settings-group" id="deepthinkGroup" style="border-top:1px solid var(--bdr);padding-top:16px">
+          <div style="display:flex;align-items:center;justify-content:space-between">
+            <div>
+              <label style="font-weight:700;font-size:.88rem;color:var(--t)" data-i="cfg_deepthink_label">Deep Thinking (사고 추론 분리 모드)</label>
+              <div style="font-size:.78rem;color:var(--m);margin-top:4px" data-i="cfg_deepthink_hint">
+                활성화 시 논리 분석 과정을 <code>reasoning_content</code>로 실시간 분리 스트리밍합니다 (OpenAI o1/DeepSeek-R1 호환). 비활성화 시 빠르고 간결한 직결 답변만 출력합니다.
+              </div>
+            </div>
+            <label class="switch" style="margin-left:16px">
+              <input type="checkbox" id="inputDeepthink">
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+
         <div style="margin-top:24px;display:flex;align-items:center">
-          <button class="btn-save" onclick="saveSettings()">💾 <span data-i="cfg_btn_save">설정 저장</span></button>
+          <button class="btn-save" onclick="saveSettings()"><span data-i="cfg_btn_save">설정 저장</span></button>
           <span id="saveAlert" class="save-alert" style="display:none">✓ <span data-i="cfg_saved_msg">설정이 성공적으로 저장되었습니다.</span></span>
         </div>
       </div>
@@ -951,8 +1201,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <button onclick="closeModal()" style="background:#f1f5f9;border:none;border-radius:8px;width:28px;height:28px;cursor:pointer;font-size:1rem;color:#64748b">✕</button>
     </div>
     <div style="display:flex;border-bottom:1px solid #e2e8f0">
-      <button id="mTabQ" onclick="mTab('q')" style="flex:1;padding:9px;font-size:.82rem;font-weight:700;background:#6366f1;color:#fff;border:none;cursor:pointer">📝 질의</button>
-      <button id="mTabR" onclick="mTab('r')" style="flex:1;padding:9px;font-size:.82rem;font-weight:700;background:#f1f5f9;color:#64748b;border:none;cursor:pointer">💬 응답</button>
+      <button id="mTabQ" onclick="mTab('q')" style="flex:1;padding:9px;font-size:.82rem;font-weight:700;background:#6366f1;color:#fff;border:none;cursor:pointer">질의</button>
+      <button id="mTabR" onclick="mTab('r')" style="flex:1;padding:9px;font-size:.82rem;font-weight:700;background:#f1f5f9;color:#64748b;border:none;cursor:pointer">응답</button>
     </div>
     <div style="flex:1;overflow-y:auto;padding:16px 18px;font-size:.84rem;line-height:1.75;white-space:pre-wrap;color:#1e293b;font-family:'Cascadia Code','Consolas',monospace" id="modalContent"></div>
   </div>
@@ -971,7 +1221,7 @@ const L = {
     no_data:"기록 없음", purge_btn:"메모리 정리", reset_btn:"통계 초기화",
     busy:"작업 중", acct_ok:"연결됨", acct_unknown:"연결 확인 전", acct_required:"로그인 필요",
     s_gw:"게이트웨이", s_ext:"브라우저 확장프로그램", s_mcp:"MCP 서버", s_db:"텔레메트리 DB",
-    installed:"✅ 실행 중", unknown:"설치 안내",
+    installed:"실행 중", unknown:"설치 안내",
     confirm_purge:"Edge 잔여 프로세스를 정리하시겠습니까?", confirm_reset:"모든 사용 기록을 삭제하시겠습니까?",
     ok:"성공", fail:"실패",
     chart_queries:"쿼리", chart_tokens:"토큰",
@@ -988,8 +1238,8 @@ const L = {
     ht_mac:"macOS 설치",
     cfg_title:"브릿지 동작 모드 및 수명 주기 설정",
     cfg_mode_label:"동작 모드 선택",
-    cfg_mode_cold:"❄️ 콜드 유지 (기본값 / 0MB 권장)",
-    cfg_mode_hot:"🔥 핫로딩 (웜 스탠바이 / 초고속)",
+    cfg_mode_cold:"콜드 유지 (기본값 / 0MB 권장)",
+    cfg_mode_hot:"핫로딩 (웜 스탠바이 / 초고속)",
     cfg_desc_cold:"• 질문-답변 완료 즉시 Edge 브라우저를 완전 강제 종료합니다.<br>• 평상시 유휴 메모리 점유율을 0MB로 깨끗하게 유지합니다.<br>• 첫 질문 시 브라우저 기동에 10~15초 소요됩니다.",
     cfg_desc_hot:"• 질문 완료 후에도 설정된 시간 동안 Edge를 켜둔 채 대기합니다.<br>• 연속 질문 시 5초 미만 즉각 응답 및 이전 맥락이 유지됩니다.<br>• 대기 시간 만료 시 메모리 누수 방지를 위해 자동으로 브라우저를 종료(0MB)합니다.",
     cfg_timeout_label:"웜 스탠바이 유지 시간 (초 단위)",
@@ -997,8 +1247,8 @@ const L = {
     cfg_btn_save:"설정 저장",
     cfg_saved_msg:"설정이 성공적으로 저장되고 엔진에 즉시 적용되었습니다.",
     seconds:"초",
-    about_desc:"amv-cp-bridge를 만들고 있습니다. 피드백이나 커피 한 잔은 언제나 환영합니다 ☕",
-    lk_site:"웹사이트", lk_blog:"블로그", lk_coffee:"커피 한 잔",
+    about_desc:"amv-cp-bridge를 만들고 있습니다. 피드백이나 문의는 언제나 환영합니다.",
+    lk_site:"웹사이트", lk_blog:"블로그", lk_coffee:"문의 및 후원",
     about_footer:"Apache-2.0 OR Commercial License · Copyright © 2026 Eunho Kim / AMEVA Foundation",
     about_stack:"Python · FastAPI · Playwright · SQLite · CustomTkinter · Chrome MV3",
   },
@@ -1012,7 +1262,7 @@ const L = {
     no_data:"No records", purge_btn:"Purge Memory", reset_btn:"Reset Stats",
     busy:"Busy", acct_ok:"Connected", acct_unknown:"Not checked", acct_required:"Sign-in required",
     s_gw:"Gateway", s_ext:"Browser Extension", s_mcp:"MCP Server", s_db:"Telemetry DB",
-    installed:"✅ Running", unknown:"Setup Guide",
+    installed:"Running", unknown:"Setup Guide",
     confirm_purge:"Purge all Edge processes?", confirm_reset:"Delete all usage records?",
     ok:"OK", fail:"Fail",
     chart_queries:"Queries", chart_tokens:"Tokens",
@@ -1029,8 +1279,8 @@ const L = {
     ht_mac:"macOS Install",
     cfg_title:"Bridge Operation Mode & Standby Lifecycle",
     cfg_mode_label:"Operation Mode",
-    cfg_mode_cold:"❄️ Cold Launch (Default / 0MB Idle)",
-    cfg_mode_hot:"🔥 Hot Standby (Keep-Alive / Ultra-Fast)",
+    cfg_mode_cold:"Cold Launch (Default / 0MB Idle)",
+    cfg_mode_hot:"Hot Standby (Keep-Alive / Ultra-Fast)",
     cfg_desc_cold:"• Forcibly terminates the Edge browser process immediately after query.<br>• Guarantees 0MB idle memory footprint.<br>• Takes 10-15s to launch browser on new query.",
     cfg_desc_hot:"• Keeps Edge browser alive in background for specified seconds after query.<br>• Enables <5s ultra-fast consecutive responses and retains conversation context.<br>• Automatically terminates browser to 0MB if no further queries arrive within timeout.",
     cfg_timeout_label:"Warm Standby Timeout (Seconds)",
@@ -1038,8 +1288,8 @@ const L = {
     cfg_btn_save:"Save Settings",
     cfg_saved_msg:"Settings successfully saved and applied to engine.",
     seconds:"sec",
-    about_desc:"Building amv-cp-bridge. Feedback and coffee are always welcome ☕",
-    lk_site:"Website", lk_blog:"Blog", lk_coffee:"Buy Me a Coffee",
+    about_desc:"Building amv-cp-bridge. Feedback is always welcome.",
+    lk_site:"Website", lk_blog:"Blog", lk_coffee:"Support & Inquiries",
     about_footer:"Apache-2.0 OR Commercial License · Copyright © 2026 Eunho Kim / AMEVA Foundation",
     about_stack:"Python · FastAPI · Playwright · SQLite · CustomTkinter · Chrome MV3",
   }
@@ -1109,7 +1359,7 @@ function updateSetupPanel(){
   ];
   document.getElementById('setupList').innerHTML = items.map(c=>`
     <div class="setup-item">
-      <div class="setup-name">${c.ok===true?'🟢':c.ok===null?'🔵':'🔴'} ${t(c.key)}</div>
+      <div class="setup-name">• ${t(c.key)}</div>
       ${c.ok===true
         ?`<span class="badge-ok">${t('installed')}</span>`
         :`<span class="badge-warn">${t('unknown')}</span>`
@@ -1149,7 +1399,7 @@ async function updateDashboard(){
         const cls=w.is_busy?'b-busy':(w.login_state==='ok'?'b-idle':'b-off');
         let txt=w.is_busy?t('busy'):t(w.login_state==='ok'?'acct_ok':(w.login_state==='required'?'acct_required':'acct_unknown'));
         if(!w.is_busy && w.is_alive && w.standby_remaining_sec > 0){
-          txt += ' (⏱️ ' + Math.round(w.standby_remaining_sec) + 's)';
+          txt += ' (' + Math.round(w.standby_remaining_sec) + 's)';
         }
         return `<div class="wi"><div><div class="wn">${esc(w.name)}</div><div class="ws">port ${w.port}</div></div><span class="wb ${cls}">${txt}</span></div>`;
       }).join('');
@@ -1219,7 +1469,7 @@ async function resetStats(){
 }
 
 // ── Settings UI Handler ──
-let currentSettings = { mode: 'cold', standby_timeout_sec: 300 };
+let currentSettings = { mode: 'cold', standby_timeout_sec: 300, enable_deepthink: false };
 
 async function loadSettingsUI(){
   try{
@@ -1229,6 +1479,8 @@ async function loadSettingsUI(){
       selectMode(currentSettings.mode || 'cold', true);
       const input = document.getElementById('inputTimeout');
       if(input) input.value = currentSettings.standby_timeout_sec || 300;
+      const dtInput = document.getElementById('inputDeepthink');
+      if(dtInput) dtInput.checked = !!currentSettings.enable_deepthink;
     }
   }catch(e){}
 }
@@ -1257,11 +1509,13 @@ async function saveSettings(){
   const mode = currentSettings.mode || 'cold';
   const input = document.getElementById('inputTimeout');
   const timeout = parseInt(input ? input.value : '300', 10) || 300;
+  const dtInput = document.getElementById('inputDeepthink');
+  const enableDeepthink = dtInput ? dtInput.checked : false;
   try{
     const res = await fetch('/api/settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: mode, standby_timeout_sec: timeout })
+      body: JSON.stringify({ mode: mode, standby_timeout_sec: timeout, enable_deepthink: enableDeepthink })
     }).then(r=>r.json());
     if(res.status === 'ok'){
       const alertEl = document.getElementById('saveAlert');

@@ -17,6 +17,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "mode": "cold",                # "cold" (단발성 즉시 0MB 종료) | "hot" (웜 스탠바이 유지)
     "standby_timeout_sec": 300,    # 핫로딩 모드 대기 만료 시간(초) — 기본 300초 (5분)
     "rate_limit_rpm": 30,          # IP당 분당 요청 제한
+    "enable_deepthink": False,     # Deep Thinking (reasoning_content 분리) 전역 기본 활성화 여부
 }
 
 
@@ -43,6 +44,8 @@ def load_settings() -> Dict[str, Any]:
                         settings["rate_limit_rpm"] = max(1, min(1000, rpm))
                     except (ValueError, TypeError):
                         pass
+                if "enable_deepthink" in loaded:
+                    settings["enable_deepthink"] = bool(loaded["enable_deepthink"])
                 return settings
         except Exception as exc:
             print(f"[!] settings.json 읽기 실패, 기본값을 사용합니다: {exc}")
@@ -81,6 +84,9 @@ def save_settings(new_data: Dict[str, Any]) -> Dict[str, Any]:
             current["rate_limit_rpm"] = max(1, min(1000, rpm))
         except (ValueError, TypeError):
             pass
+
+    if "enable_deepthink" in new_data:
+        current["enable_deepthink"] = bool(new_data["enable_deepthink"])
 
     os.makedirs(CONFIG_DIR, exist_ok=True)
     temp_path = SETTINGS_PATH + ".tmp"

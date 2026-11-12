@@ -25,7 +25,7 @@ def cmd_status(args):
     from amv_cp_bridge.telemetry_db import telemetry_db
     engine = CopilotEngine()
     print("=" * 65)
-    print("⚡ amv-cp-bridge | Sovereign Worker Pool & Telemetry Status")
+    print("[amv-cp-bridge] Sovereign Worker Pool & Telemetry Status")
     print("=" * 65)
     print(engine.get_status_summary())
     for w in engine.workers:
@@ -40,7 +40,7 @@ def cmd_status(args):
     m = stats["month"]
     y = stats["year"]
     tot = stats["total"]
-    print(f"📊 [텔레메트리 통계 DB]")
+    print(f"[텔레메트리 통계 DB]")
     print(f"  - 오늘 (Today)     : {t['queries']}회 | +{t['tokens']:,} 토큰 (평균 {t['avg_duration_ms']}ms)")
     print(f"  - 이번 주 (Week)   : {w_stat['queries']}회 | +{w_stat['tokens']:,} 토큰")
     print(f"  - 이번 달 (Month)  : {m['queries']}회 | +{m['tokens']:,} 토큰")
@@ -114,7 +114,7 @@ def cmd_dashboard(args):
     url = f"http://localhost:{port}/dashboard"
     
     print("=" * 65)
-    print(f"⚡ amv-cp-bridge | Cyber Telemetry Dashboard & Gateway")
+    print(f"[amv-cp-bridge] Cyber Telemetry Dashboard & Gateway")
     print(f"[*] 대시보드 접속 URL : {url}")
     print(f"[*] OpenAI API 엔드포인트: http://localhost:{port}/v1/chat/completions")
     print("=" * 65)

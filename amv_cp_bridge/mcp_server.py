@@ -79,7 +79,8 @@ async def ask_copilot(
     if gw_url:
         try:
             req_body = json.dumps({
-                "model": "gpt-5.6-sol" if "deep" in mode else "copilot-standard",
+                "model": "copilot-deepthink" if "deep" in mode else "copilot-standard",
+                "deepthink": True if "deep" in mode else False,
                 "messages": [{"role": "user", "content": full_prompt}]
             }).encode("utf-8")
             req = urllib.request.Request(

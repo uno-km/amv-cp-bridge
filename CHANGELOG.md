@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.3.0
+
+### Added
+- **Standalone Multi-Account Parallel Pool**: Released `CopilotPool` queue lock immediately after atomic worker reservation (`_reserved`), enabling true concurrent execution across multiple logged-in Copilot worker ports while deprioritizing `login_state == "required"` workers.
+- **Native Image Generation Gateway Endpoint (`POST /v1/images/generations`)**: Added `CopilotWorker.generate_image` and `CopilotPool.generate_image` with in-page `data:`/`blob:`/`https:` image byte extraction, reference SHA-256/dimension filtering, structured error classification (HTTP 422 policy refusal, HTTP 429 quota/transient limit), and cross-worker buffered failover.
+- **Structured Reasoning & DeepThink Stream Separation (`amv_cp_bridge.reasoning`)**: Added `ReasoningStreamParser`, DeepThink directive toggle support, and `reasoning_content` / `content` SSE delta separation.
+- **Per-Account Browser Preference & Manual Window Control**: Added `"browser": "chrome" | "edge"` fallback preference alongside `Last Browser` preservation, `external` status flagging for manually opened sessions, and single-worker shutdown via `POST /api/accounts/{port}/close`.
+- **Generic Telemetry Source Attribution**: Supported `X-Bridge-Source` and `X-Client-App` headers across REST endpoints cleanly without client-specific coupling.
+
+### Changed
+- Removed client-specific file lock env hooks and `/api/telemetry/record` bypass endpoint so all usage is recorded centrally by the bridge server.
+- Buffered non-streaming `CopilotPool.query()` per attempt so mid-stream worker failures discard partial output before failing over to another worker.
+
 ## 1.2.1
 
 ### Added

@@ -16,7 +16,7 @@ from amv_cp_bridge.notifications import notify_login_required
 
 class TestEntraIdFastFail(unittest.TestCase):
     def test_version_bump(self):
-        self.assertEqual(__version__, "1.2.1")
+        self.assertEqual(__version__, "1.3.0")
 
     def test_is_login_url(self):
         self.assertTrue(_is_login_url("https://login.microsoftonline.com/common/oauth2/v2.0/authorize"))
@@ -64,21 +64,27 @@ class TestEntraIdFastFail(unittest.TestCase):
         self.assertGreaterEqual(elapsed, 0.9)
 
     def test_notify_login_required_debounce(self):
-        """Verify that notify_login_required debounces consecutive calls."""
-        first = notify_login_required("Session expired")
-        second = notify_login_required("Session expired")
-        # Second call immediately after should be debounced and return False
-        self.assertFalse(second)
+        """Verify that notify_login_required debounces consecutive calls without firing live desktop toasts."""
+        from unittest.mock import patch
+        import amv_cp_bridge.notifications as notif
+
+        with patch.object(notif, "_last_notify_time", 0.0), patch.object(notif.subprocess, "run"):
+            first = notify_login_required("Session expired")
+            second = notify_login_required("Session expired")
+            self.assertTrue(first)
+            self.assertFalse(second)
 
     def test_http_401_on_login_required(self):
         """Verify that CopilotLoginRequired produces HTTP 401 with standard error format."""
         from fastapi.testclient import TestClient
-        from amv_cp_bridge.gateway import app, engine
+        import amv_cp_bridge.gateway as gw
         from unittest.mock import patch
 
-        client = TestClient(app)
+        client = TestClient(gw.app)
 
-        with patch.object(engine, "query", side_effect=CopilotLoginRequired("Session revoked")):
+        with patch.object(gw.engine, "query", side_effect=CopilotLoginRequired("Session revoked")), patch.object(
+            gw, "notify_login_required"
+        ):
             response = client.post(
                 "/v1/chat/completions",
                 json={

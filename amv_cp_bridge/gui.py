@@ -665,14 +665,14 @@ def _launch_main_gui(host: str, port: int, server_ok: bool = True):
 
     TEXTS = {
         "ko": dict(
-            tab_dash="📊 대시보드", tab_usage="📈 사용량", tab_settings="⚙️ 설정", tab_howto="📖 사용방법", tab_about="🙋 만든이",
+            tab_dash="대시보드", tab_usage="사용량", tab_settings="설정", tab_howto="사용방법", tab_about="만든이",
             lbl_today="오늘", lbl_week="이번 주", lbl_month="이번 달", lbl_year="올해",
             tokens="토큰",
             idle="● 대기 중", busy="● 처리 중", connecting="● 연결 중...",
             worker_busy="작업 중", worker_ok="연결됨", worker_unknown="연결 확인 전", worker_login="로그인 필요",
             btn_connect="계정 연결",
-            btn_purge="🧹 메모리 정리", btn_reset="🗑 통계 초기화",
-            btn_open="🌐 브라우저로 열기",
+            btn_purge="메모리 정리", btn_reset="통계 초기화",
+            btn_open="브라우저로 열기",
             confirm_purge="Edge 잔여 프로세스를 정리하시겠습니까?",
             confirm_reset="모든 사용 기록을 삭제하시겠습니까?",
             no_data="기록 없음",
@@ -687,31 +687,31 @@ def _launch_main_gui(host: str, port: int, server_ok: bool = True):
             ht_4="4. MCP 서버 (Claude Desktop / Cursor)\n   → amv-cp-bridge serve",
             ht_5="5. 브라우저 확장프로그램\n   → Releases에서 amv-cp-bridge-extension.zip 다운로드 후 압축 해제\n   → chrome://extensions → 개발자 모드 → 압축해제된 폴더 로드",
             ht_modes="추론 모드: 자동 / 빠름 / 깊게 / Sol Quick / Sol Deep Thinking",
-            cfg_title="⚡ 브릿지 동작 모드 및 수명 주기 설정 (Lifecycle & Standby)",
+            cfg_title="브릿지 동작 모드 및 수명 주기 설정 (Lifecycle & Standby)",
             cfg_mode_label="동작 모드 선택",
-            cfg_mode_cold="❄️ 콜드 유지 (기본값 / 0MB 권장)",
-            cfg_mode_hot="🔥 핫로딩 (웜 스탠바이 / 초고속 응답)",
+            cfg_mode_cold="콜드 유지 (기본값 / 0MB 권장)",
+            cfg_mode_hot="핫로딩 (웜 스탠바이 / 초고속 응답)",
             cfg_desc_cold="• 질문-답변 완료 즉시 Edge 브라우저 프로세스를 완전히 강제 종료합니다.\n• 유휴 상태 메모리 점유율을 0MB로 깨끗하게 유지합니다.\n• 새 질문 시 브라우저 최초 기동에 약 10~15초가 소요됩니다.",
             cfg_desc_hot="• 질문-답변 완료 후에도 설정된 시간 동안 Edge 브라우저를 백그라운드에 켜둔 채 대기합니다.\n• 연속 질문 시 5초 미만 즉각 응답 및 이전 세션 맥락이 유지됩니다.\n• 대기 시간 동안 추가 요청이 없으면 메모리 회수를 위해 자동으로 브라우저를 종료(0MB)합니다.",
             cfg_timeout_label="웜 스탠바이 유지 시간 (초 단위)",
             cfg_timeout_hint="핫로딩 모드에서 마지막 요청 완료 후 브라우저 프로세스를 유지할 시간입니다.",
-            cfg_btn_save="💾 설정 저장",
+            cfg_btn_save="설정 저장",
             cfg_saved_msg="✓ 설정이 성공적으로 저장되고 엔진에 즉시 적용되었습니다.",
             seconds="초 (sec)",
             ab_desc="M365 Copilot을 로컬 API로 연결하는 브릿지입니다.",
-            ab_site="🌐  웹사이트", ab_gh="🐙  GitHub", ab_blog="✍️  블로그", ab_coffee="☕  커피 한 잔",
+            ab_site="웹사이트", ab_gh="GitHub", ab_blog="블로그", ab_coffee="문의 및 후원",
             ab_license="Apache-2.0 OR Commercial License\nCopyright © 2026 Eunho Kim / AMEVA Foundation",
-            flag_btn="🇺🇸 EN",
+            flag_btn="EN",
         ),
         "en": dict(
-            tab_dash="📊 Dashboard", tab_usage="📈 Usage", tab_settings="⚙️ Settings", tab_howto="📖 How to Use", tab_about="🙋 About",
+            tab_dash="Dashboard", tab_usage="Usage", tab_settings="Settings", tab_howto="How to Use", tab_about="About",
             lbl_today="Today", lbl_week="This Week", lbl_month="This Month", lbl_year="This Year",
             tokens="tokens",
             idle="● Idle", busy="● Processing", connecting="● Connecting...",
             worker_busy="Busy", worker_ok="Connected", worker_unknown="Not checked", worker_login="Sign-in required",
             btn_connect="Connect",
-            btn_purge="🧹 Purge Memory", btn_reset="🗑 Reset Stats",
-            btn_open="🌐 Open in Browser",
+            btn_purge="Purge Memory", btn_reset="Reset Stats",
+            btn_open="Open in Browser",
             confirm_purge="Purge all Edge processes?",
             confirm_reset="Delete all usage records?",
             no_data="No records",
@@ -726,21 +726,21 @@ def _launch_main_gui(host: str, port: int, server_ok: bool = True):
             ht_4="4. MCP Server (Claude Desktop / Cursor)\n   → amv-cp-bridge serve",
             ht_5="5. Browser Extension\n   → Download amv-cp-bridge-extension.zip from Releases and extract it\n   → chrome://extensions → Developer mode → Load unpacked",
             ht_modes="Modes: Auto / Fast / Deep / Sol Quick / Sol Deep Thinking",
-            cfg_title="⚡ Bridge Operation Mode & Standby Lifecycle",
+            cfg_title="Bridge Operation Mode & Standby Lifecycle",
             cfg_mode_label="Operation Mode",
-            cfg_mode_cold="❄️ Cold Launch (Default / 0MB Idle)",
-            cfg_mode_hot="🔥 Hot Standby (Keep-Alive / Ultra-Fast)",
+            cfg_mode_cold="Cold Launch (Default / 0MB Idle)",
+            cfg_mode_hot="Hot Standby (Keep-Alive / Ultra-Fast)",
             cfg_desc_cold="• Forcibly terminates the Edge browser process immediately after query completion.\n• Guarantees 0MB idle memory footprint.\n• Takes 10-15s to launch browser on new query.",
             cfg_desc_hot="• Keeps Edge browser alive in background for specified seconds after query completion.\n• Enables <5s ultra-fast consecutive responses and retains conversation context.\n• Automatically terminates browser to 0MB if no further queries arrive within timeout.",
             cfg_timeout_label="Warm Standby Timeout (Seconds)",
             cfg_timeout_hint="How long to keep Edge running after the last query in hot mode.",
-            cfg_btn_save="💾 Save Settings",
+            cfg_btn_save="Save Settings",
             cfg_saved_msg="✓ Settings successfully saved and applied to engine.",
             seconds="sec",
             ab_desc="A bridge that exposes M365 Copilot as a local API.",
-            ab_site="🌐  Website", ab_gh="🐙  GitHub", ab_blog="✍️  Blog", ab_coffee="☕  Buy Me a Coffee",
+            ab_site="Website", ab_gh="GitHub", ab_blog="Blog", ab_coffee="Support & Inquiries",
             ab_license="Apache-2.0 OR Commercial License\nCopyright © 2026 Eunho Kim / AMEVA Foundation",
-            flag_btn="🇰🇷 KO",
+            flag_btn="KO",
         ),
     }
 
@@ -779,7 +779,7 @@ def _launch_main_gui(host: str, port: int, server_ok: bool = True):
     topbar.pack(fill="x", side="top")
     topbar.pack_propagate(False)
 
-    ctk.CTkLabel(topbar, text="⚡ amv-cp-bridge",
+    ctk.CTkLabel(topbar, text="amv-cp-bridge",
                  font=ctk.CTkFont(family="Pretendard", size=15, weight="bold"),
                  text_color=C["primary"]).pack(side="left", padx=16, pady=10)
     ctk.CTkLabel(topbar, text=f"v{__version__}",
@@ -802,7 +802,7 @@ def _launch_main_gui(host: str, port: int, server_ok: bool = True):
         corner_radius=99, padx=10, pady=4)
     status_badge.pack(side="right", padx=8, pady=10)
 
-    lang_btn = ctk.CTkButton(topbar, text="🇺🇸 EN", width=68, height=28,
+    lang_btn = ctk.CTkButton(topbar, text="EN", width=54, height=28,
                               fg_color=C["border"], text_color=C["muted"],
                               hover_color="#e2e8f0", corner_radius=8,
                               font=ctk.CTkFont(size=11))
@@ -820,7 +820,7 @@ def _launch_main_gui(host: str, port: int, server_ok: bool = True):
                                border_width=0)
     tab_frame.pack(fill="both", expand=True)
 
-    for n in ["📊 대시보드", "📈 사용량", "⚙️ 설정", "📖 사용방법", "🙋 만든이"]:
+    for n in ["대시보드", "사용량", "설정", "사용방법", "만든이"]:
         tab_frame.add(n)
 
     def make_card(parent, **kw):
@@ -835,7 +835,7 @@ def _launch_main_gui(host: str, port: int, server_ok: bool = True):
         return lbl
 
     # ══ TAB 1: 대시보드 ══════════════════════════════════════════
-    t1 = tab_frame.tab("📊 대시보드")
+    t1 = tab_frame.tab("대시보드")
     t1.configure(fg_color=C["bg"])
 
     stat_frame = ctk.CTkFrame(t1, fg_color="transparent")
@@ -924,7 +924,7 @@ def _launch_main_gui(host: str, port: int, server_ok: bool = True):
                  font=ctk.CTkFont(size=10), text_color=C["muted"]).pack(pady=10)
 
     # ══ TAB 2: 사용량 ════════════════════════════════════════════
-    t2 = tab_frame.tab("📈 사용량")
+    t2 = tab_frame.tab("사용량")
     t2.configure(fg_color=C["bg"])
     hist_card = make_card(t2)
     hist_card.pack(fill="both", expand=True, padx=12, pady=10)
@@ -1104,7 +1104,7 @@ p{{margin:.6em 0}}
                      font=ctk.CTkFont(size=9, weight="bold"),
                      fg_color=src_color, text_color="#ffffff",
                      corner_radius=4, padx=6, pady=2).pack(side="left", padx=10, pady=8)
-        ctk.CTkLabel(meta_bar, text=f"🕐 {ts}   ⚡ {dur/1000:.1f}s   🔤 {tok:,} tokens",
+        ctk.CTkLabel(meta_bar, text=f"{ts}   |   {dur/1000:.1f}s   |   {tok:,} tokens",
                      font=ctk.CTkFont(size=10), text_color=C["muted"]).pack(side="left")
 
         # 탭: 질의 / 응답
@@ -1116,8 +1116,8 @@ p{{margin:.6em 0}}
                             segmented_button_unselected_hover_color="#e0e7ff",
                             border_width=0, height=28)
         nb.pack(fill="both", expand=True, padx=0, pady=0)
-        nb.add("📝 질의")
-        nb.add("💬 응답")
+        nb.add("질의")
+        nb.add("응답")
 
         def _make_content_area(parent, md_text: str):
             if _has_tkw and _has_md2:
@@ -1137,9 +1137,9 @@ p{{margin:.6em 0}}
             tb.configure(state="disabled")
 
         clean_query = _extract_user_query(rec.get("full_prompt") or "")
-        _make_content_area(nb.tab("📝 질의"), clean_query)
+        _make_content_area(nb.tab("질의"), clean_query)
         full_response = rec.get("full_response") or ""
-        _make_content_area(nb.tab("💬 응답"), full_response)
+        _make_content_area(nb.tab("응답"), full_response)
 
         # 브라우저에서 열기 버튼 (KaTeX 수식 렌더링용)
         def _open_in_browser():
@@ -1155,8 +1155,8 @@ p{{margin:.6em 0}}
                 pass
 
         browser_btn = ctk.CTkButton(
-            card, text="🌐 브라우저에서 열기 (수식 렌더링)",
-            width=220, height=28,
+            card, text="브라우저에서 열기 (수식 렌더링)",
+            width=200, height=28,
             fg_color=C["primary_lt"], text_color=C["primary"],
             hover_color="#ddd6fe", corner_radius=8,
             font=ctk.CTkFont(size=10),
@@ -1164,7 +1164,7 @@ p{{margin:.6em 0}}
         browser_btn.pack(side="bottom", pady=(0, 10))
 
     # ══ TAB: 설정 ══════════════════════════════════════════════
-    t_cfg = tab_frame.tab("⚙️ 설정")
+    t_cfg = tab_frame.tab("설정")
     t_cfg.configure(fg_color=C["bg"])
 
     cfg_card = make_card(t_cfg)
@@ -1251,6 +1251,22 @@ p{{margin:.6em 0}}
                       corner_radius=6, font=ctk.CTkFont(size=10),
                       command=lambda v=p_sec: _set_preset(v)).pack(side="left", padx=3)
 
+    dt_frame = ctk.CTkFrame(cfg_scroll, fg_color="transparent")
+    dt_frame.pack(fill="x", pady=(0, 16))
+
+    cfg_dt_lbl = ctk.CTkLabel(dt_frame, text="Deep Thinking (사고 추론 분리 모드)",
+                              font=ctk.CTkFont(size=13, weight="bold"), text_color=C["text"])
+    cfg_dt_lbl.pack(anchor="w", pady=(0, 2))
+    cfg_dt_hint = ctk.CTkLabel(dt_frame, text="활성화 시 reasoning_content와 content를 실시간 분리 스트리밍합니다.\n비활성화 시 일반 직결 답변만 출력합니다.",
+                               font=ctk.CTkFont(size=10), text_color=C["muted"], justify="left")
+    cfg_dt_hint.pack(anchor="w", pady=(0, 8))
+
+    dt_switch_var = ctk.BooleanVar(value=bool(saved_settings.get("enable_deepthink", False)))
+    dt_switch = ctk.CTkSwitch(dt_frame, text="Deep Thinking 모드 활성화 (기본값: OFF)", variable=dt_switch_var,
+                              font=ctk.CTkFont(size=11, weight="bold"),
+                              progress_color=C["primary"])
+    dt_switch.pack(anchor="w")
+
     save_row = ctk.CTkFrame(cfg_scroll, fg_color="transparent")
     save_row.pack(fill="x", pady=(8, 12))
 
@@ -1270,7 +1286,11 @@ p{{margin:.6em 0}}
             messagebox.showwarning("설정 오류", "스탠바이 시간은 10초 ~ 86400초 사이의 숫자로 입력해주세요.")
             return
 
-        payload = {"mode": chosen_mode, "standby_timeout_sec": t_sec}
+        payload = {
+            "mode": chosen_mode,
+            "standby_timeout_sec": t_sec,
+            "enable_deepthink": bool(dt_switch_var.get())
+        }
         save_settings(payload)
         try:
             req_data = json.dumps(payload).encode("utf-8")
@@ -1295,7 +1315,7 @@ p{{margin:.6em 0}}
     cfg_saved_lbl.pack(side="left")
 
     # ══ TAB 3: 사용방법 ══════════════════════════════════════════
-    t3 = tab_frame.tab("📖 사용방법")
+    t3 = tab_frame.tab("사용방법")
     t3.configure(fg_color=C["bg"])
     howto_card = make_card(t3)
     howto_card.pack(fill="both", expand=True, padx=12, pady=10)
@@ -1317,11 +1337,11 @@ p{{margin:.6em 0}}
     fill_howto()
 
     # ══ TAB 4: 만든이 ════════════════════════════════════════════
-    t4 = tab_frame.tab("🙋 만든이")
+    t4 = tab_frame.tab("만든이")
     t4.configure(fg_color=C["bg"])
     ab_card = make_card(t4)
     ab_card.pack(fill="both", expand=True, padx=12, pady=10)
-    ctk.CTkLabel(ab_card, text="⚡ Eunho Kim (uno-km)",
+    ctk.CTkLabel(ab_card, text="Eunho Kim (uno-km)",
                  font=ctk.CTkFont(size=18, weight="bold"),
                  text_color=C["primary"]).pack(pady=(20, 4))
     ab_desc_lbl = ctk.CTkLabel(ab_card, text=T("ab_desc"),
@@ -1385,11 +1405,11 @@ p{{margin:.6em 0}}
         mode_seg.set(T("cfg_mode_cold") if current_mode_var.get() == "cold" else T("cfg_mode_hot"))
 
         tab_titles = {
-            "📊 대시보드": T("tab_dash"),
-            "📈 사용량": T("tab_usage"),
-            "⚙️ 설정": T("tab_settings"),
-            "📖 사용방법": T("tab_howto"),
-            "🙋 만든이": T("tab_about"),
+            "대시보드": T("tab_dash"),
+            "사용량": T("tab_usage"),
+            "설정": T("tab_settings"),
+            "사용방법": T("tab_howto"),
+            "만든이": T("tab_about"),
         }
         for orig_key, new_text in tab_titles.items():
             if hasattr(tab_frame, "_segmented_button") and hasattr(tab_frame._segmented_button, "_buttons_dict"):
@@ -1483,6 +1503,8 @@ p{{margin:.6em 0}}
                 if "standby_timeout_sec" in s_data:
                     timeout_entry.delete(0, "end")
                     timeout_entry.insert(0, str(s_data["standby_timeout_sec"]))
+                if "enable_deepthink" in s_data:
+                    dt_switch_var.set(bool(s_data["enable_deepthink"]))
             if "workers" in evt:
                 _update_workers(evt["workers"])
         elif etype in ("task_queued", "task_start", "task_done"):
@@ -1525,8 +1547,8 @@ p{{margin:.6em 0}}
                                     font=ctk.CTkFont(size=10), text_color=C["text"],
                                     anchor="w")
             prev_lbl.pack(side="left", fill="x", expand=True, pady=5)
-            st_lbl = ctk.CTkLabel(fr, text="⏳",
-                                  font=ctk.CTkFont(size=11),
+            st_lbl = ctk.CTkLabel(fr, text="대기",
+                                  font=ctk.CTkFont(size=10, weight="bold"),
                                   text_color=C["muted"])
             st_lbl.pack(side="right", padx=8, pady=5)
             tok_lbl = ctk.CTkLabel(fr, text=f"{tokens:,}tok" if tokens else "",
@@ -1553,7 +1575,7 @@ p{{margin:.6em 0}}
             if tokens:
                 row["tok"].configure(text=f"{tokens:,}tok")
         row = _task_rows[tid]
-        icons = {"queued": "⏳", "running": "🚀", "done": "✓", "error": "✗"}
+        icons = {"queued": "대기", "running": "진행", "done": "완료", "error": "오류"}
         clrs  = {"queued": C["muted"], "running": C["primary"],
                  "done": C["green"], "error": C["red"]}
         row["st"].configure(text=icons.get(status, "?"),
@@ -1588,7 +1610,7 @@ p{{margin:.6em 0}}
                 s, col = T("worker_busy"), C["primary"]
             elif login_state == "ok":
                 if standby_rem and standby_rem > 0:
-                    s, col = f"{T('worker_ok')} (⏱️ {int(standby_rem)}s)", C["green"]
+                    s, col = f"{T('worker_ok')} ({int(standby_rem)}s)", C["green"]
                 else:
                     s, col = T("worker_ok"), C["green"]
             elif login_state == "required":
