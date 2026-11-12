@@ -121,7 +121,7 @@ def gateway_checks(version: str, env: dict) -> None:
         check("H-05 gateway version", health.get("version") == version, str(health.get("version")))
 
         models = json.loads(request(port, "/v1/models")[2])
-        check("B-05 /v1/models has 3 models", len(models.get("data", [])) == 3, str(len(models.get("data", []))))
+        check("B-05 /v1/models has 5 models", len(models.get("data", [])) == 5, str(len(models.get("data", []))))
 
         html = request(port, "/dashboard")[2]
         check("H-05 dashboard version", f"v{version}<" in html and "__APP_VERSION__" not in html)
