@@ -9,7 +9,7 @@ description = "Sovereign Cognitive Offloading Suite & Zero-Leak REST/MCP Gateway
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0 OR Commercial-License" }
-authors = [{ name = "Eunho Kim", email = "contact@uno-km.com" }]
+authors = [{ name = "Eunho Kim", email = "amv.foundation.kr@gmail.com" }]
 keywords = [
   "amv-cp-bridge",
   "mcp",

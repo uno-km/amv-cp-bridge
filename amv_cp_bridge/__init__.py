@@ -5,7 +5,7 @@ AMEVA Copilot Bridge Package
 Production-grade ephemeral zero-leak bridge and multi-protocol gateway for Microsoft 365 Copilot.
 """
 
-__author__ = "Eunho Kim <contact@uno-km.com>"
+__author__ = "Eunho Kim <amv.foundation.kr@gmail.com>"
 
 from ._version import __version__
 

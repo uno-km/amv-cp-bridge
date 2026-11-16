@@ -447,7 +447,7 @@ Apache-2.0 OR Commercial License
 
 Copyright (c) 2026 Eunho Kim / AMEVA Foundation
 
-상업적 이용 문의: contact@uno-km.com
+상업적 이용 문의: amv.foundation.kr@gmail.com
 
 ---
 
@@ -666,4 +666,4 @@ rm -rf ~/.amv_cp_bridge ~/copilot_profile_default ~/copilot_profile_secondary ~/
 
 Apache-2.0 OR Commercial License — Copyright (c) 2026 Eunho Kim / AMEVA Foundation
 
-Commercial licensing: contact@uno-km.com
+Commercial licensing: amv.foundation.kr@gmail.com
