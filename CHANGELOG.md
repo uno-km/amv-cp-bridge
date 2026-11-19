@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.4.0
+
+### Added
+- **Dynamic GitHub Release Hot-Swap Auto-Updater (`amv_cp_bridge.updater`, `/api/update/check`, `/api/update/apply`)**: Added periodic 30-minute background release polling in both the native desktop GUI and the web dashboard (`/dashboard`). In frozen Windows EXE mode, clicking the update banner downloads `amv-cp-bridge.exe` directly from the latest GitHub Release, validates the published `.sha256` checksum, spawns a detached PowerShell atomic hot-swap helper with `.bak` rollback safety, and automatically relaunches the updated executable.
+- **Hot-Mode Renderer Memory Tab Recycling (`CopilotWorker._recycle_tab`)**: Automatically opens a fresh Copilot tab before closing accumulated old tabs every 15 requests (`COPILOT_TAB_RECYCLE_INTERVAL`) or after a timeout/DOM error in `hot` standby mode, reclaiming renderer memory while preserving conversation continuity when `reset_chat=False`.
+- **University & Enterprise SSO Self-Healing + KMSI Auto-Confirm**: Added automatic `"Stay signed in?"` (`#idSIButton9`) confirmation, configured email matching in `accounts.json`, and full timeout allowance during live verification and prompt submission for multi-hop SAML/ADFS SSO redirects.
+- **GitHub Actions Automated Release Pipeline (`.github/workflows/release.yml`)**: Automated Windows test execution, PyInstaller EXE packaging, `selftest` verification, `.sha256` checksum generation, and browser extension zip publishing on `v*.*.*` tag pushes.
+
+### Fixed
+- **Zero-Orphan Process Tree Teardown (`_teardown_browser`)**: Tracked direct browser spawn PID (`_browser_pid`), snapshot listening PIDs prior to Playwright socket disconnect, added `--disable-background-mode` / `--disable-background-networking` / `--disable-sync` / `--no-service-autorun` launch flags, and sanitized `Default/Preferences` (`exit_type: "Normal"`) before launch to prevent orphan `msedge.exe` accumulation and session crash-restore popups.
+
 ## 1.3.0
 
 ### Added

@@ -636,13 +636,13 @@ def _launch_splash(host: str, port: int):
             _log_update("다음에 하기 선택 → 현재 버전으로 계속 진행합니다.")
             return ok
 
-        _log_update("업데이트 선택 → 재설치 명령을 실행합니다.")
+        _log_update("업데이트 선택 → 자동 다운로드 및 교체·재시작을 실행합니다.")
         try:
-            updater.launch_reinstall()
+            updater.apply_update_and_prepare_restart(latest)
         except (updater.UpdateError, OSError, subprocess.SubprocessError) as exc:
-            _log_update(f"✗ 재설치 명령 실행 실패: {exc}")
+            _log_update(f"✗ 업데이트 실행 실패: {exc}")
             return None
-        _log_update("✓ 재설치 창을 열었습니다. 프로그램을 종료합니다.")
+        _log_update("✓ 업데이트 교체가 준비되었습니다. 프로그램을 재시작합니다.")
         time.sleep(0.8)
         os._exit(0)
 
@@ -669,12 +669,20 @@ def _launch_main_gui(host: str, port: int, server_ok: bool = True):
             lbl_today="오늘", lbl_week="이번 주", lbl_month="이번 달", lbl_year="올해",
             tokens="토큰",
             idle="● 대기 중", busy="● 처리 중", connecting="● 연결 중...",
-            worker_busy="작업 중", worker_ok="연결됨", worker_unknown="연결 확인 전", worker_login="로그인 필요",
-            btn_connect="계정 연결",
+            worker_busy="작업 중", worker_verifying="점검 중...", worker_ok="연결됨", worker_unknown="연결 확인 전", worker_login="로그인 필요",
+            btn_connect="계정 연결", btn_open_win="창 열기", btn_verify="점검", btn_verify_all="전체 점검",
+            verify_detail_live="실시간 확인", verify_detail_login="로그인 확인", verify_detail_sso="SSO 재로그인 필요", verify_detail_timeout="응답창 미감지",
+            btn_add_acct="+ 계정 추가", btn_del_acct="삭제",
+            add_acct_title="Copilot 계정 추가",
+            acct_name_lbl="계정 이름 *", acct_port_lbl="디버깅 포트 (선택 · 비우면 자동 할당)",
+            acct_browser_lbl="브라우저", acct_prof_lbl="프로필 폴더 (선택 · 비우면 자동 생성)",
+            btn_browse="찾아보기", btn_cancel="취소", btn_submit_add="추가",
+            confirm_del_acct=" 계정을 삭제하시겠습니까?\n(프로필 폴더 데이터는 유지됩니다)",
             btn_purge="메모리 정리", btn_reset="통계 초기화",
-            btn_open="브라우저로 열기",
+            btn_open="브라우저로 열기", btn_quit="완전 종료",
             confirm_purge="Edge 잔여 프로세스를 정리하시겠습니까?",
             confirm_reset="모든 사용 기록을 삭제하시겠습니까?",
+            confirm_quit="amv-cp-bridge 서버와 앱을 완전히 종료하시겠습니까?",
             no_data="기록 없음",
             server_wait="서버 연결 대기 중...",
             ok="성공", fail="실패",
@@ -708,12 +716,20 @@ def _launch_main_gui(host: str, port: int, server_ok: bool = True):
             lbl_today="Today", lbl_week="This Week", lbl_month="This Month", lbl_year="This Year",
             tokens="tokens",
             idle="● Idle", busy="● Processing", connecting="● Connecting...",
-            worker_busy="Busy", worker_ok="Connected", worker_unknown="Not checked", worker_login="Sign-in required",
-            btn_connect="Connect",
+            worker_busy="Busy", worker_verifying="Checking...", worker_ok="Connected", worker_unknown="Not checked", worker_login="Sign-in required",
+            btn_connect="Connect", btn_open_win="Open Window", btn_verify="Verify", btn_verify_all="Verify All",
+            verify_detail_live="Live verified", verify_detail_login="Sign-in verified", verify_detail_sso="SSO sign-in required", verify_detail_timeout="Composer timeout",
+            btn_add_acct="+ Add Account", btn_del_acct="Delete",
+            add_acct_title="Add Copilot Account",
+            acct_name_lbl="Account Name *", acct_port_lbl="Debugging Port (Optional · Auto if blank)",
+            acct_browser_lbl="Browser", acct_prof_lbl="Profile Directory (Optional · Auto if blank)",
+            btn_browse="Browse", btn_cancel="Cancel", btn_submit_add="Add",
+            confirm_del_acct=" account will be removed.\n(Profile directory is preserved)",
             btn_purge="Purge Memory", btn_reset="Reset Stats",
-            btn_open="Open in Browser",
+            btn_open="Open in Browser", btn_quit="Quit App",
             confirm_purge="Purge all Edge processes?",
             confirm_reset="Delete all usage records?",
+            confirm_quit="Stop the amv-cp-bridge server and exit completely?",
             no_data="No records",
             server_wait="Waiting for server...",
             ok="OK", fail="Fail",
@@ -863,7 +879,150 @@ def _launch_main_gui(host: str, port: int, server_ok: bool = True):
 
     wcard = make_card(dual)
     wcard.grid(row=0, column=0, padx=(0, 4), pady=4, sticky="nsew")
-    wcard_title_lbl = card_title(wcard, "계정 상태")
+    wcard_hdr = ctk.CTkFrame(wcard, fg_color="transparent")
+    wcard_hdr.pack(fill="x", padx=16, pady=(12, 0))
+    wcard_title_lbl = ctk.CTkLabel(wcard_hdr, text=T("card_workers"),
+                                   font=ctk.CTkFont(size=12, weight="bold"),
+                                   text_color=C["muted"])
+    wcard_title_lbl.pack(side="left")
+
+    def _open_add_account_dialog():
+        from tkinter import messagebox, filedialog
+
+        dlg = ctk.CTkToplevel(app_root)
+        dlg.title(T("add_acct_title"))
+        dlg.geometry("420x360")
+        dlg.resizable(False, False)
+        dlg.configure(fg_color="#ffffff")
+        dlg.transient(app_root)
+        dlg.grab_set()
+
+        body = ctk.CTkFrame(dlg, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=18, pady=16)
+
+        ctk.CTkLabel(body, text=T("acct_name_lbl"), font=ctk.CTkFont(size=11, weight="bold"),
+                     text_color=C["text"]).pack(anchor="w")
+        name_ent = ctk.CTkEntry(body, placeholder_text="예: 학교 계정 / 보조 계정", height=32)
+        name_ent.pack(fill="x", pady=(3, 10))
+        name_ent.focus_set()
+
+        ctk.CTkLabel(body, text=T("acct_port_lbl"), font=ctk.CTkFont(size=11, weight="bold"),
+                     text_color=C["text"]).pack(anchor="w")
+        port_ent = ctk.CTkEntry(body, placeholder_text="9334", height=32)
+        port_ent.pack(fill="x", pady=(3, 10))
+
+        ctk.CTkLabel(body, text=T("acct_browser_lbl"), font=ctk.CTkFont(size=11, weight="bold"),
+                     text_color=C["text"]).pack(anchor="w")
+        browser_var = ctk.StringVar(value="auto")
+        browser_menu = ctk.CTkOptionMenu(body, values=["auto", "edge", "chrome"], variable=browser_var, height=30)
+        browser_menu.pack(fill="x", pady=(3, 10))
+
+        ctk.CTkLabel(body, text=T("acct_prof_lbl"), font=ctk.CTkFont(size=11, weight="bold"),
+                     text_color=C["text"]).pack(anchor="w")
+        prof_row = ctk.CTkFrame(body, fg_color="transparent")
+        prof_row.pack(fill="x", pady=(3, 14))
+        prof_ent = ctk.CTkEntry(prof_row, placeholder_text="C:\\Users\\...\\copilot_profile_9334", height=32)
+        prof_ent.pack(side="left", fill="x", expand=True, padx=(0, 6))
+
+        def _pick_dir():
+            chosen = filedialog.askdirectory(parent=dlg)
+            if chosen:
+                prof_ent.delete(0, "end")
+                prof_ent.insert(0, chosen)
+
+        ctk.CTkButton(prof_row, text=T("btn_browse"), width=74, height=32,
+                      fg_color=C["border"], text_color=C["text"], hover_color="#cbd5e1",
+                      command=_pick_dir).pack(side="right")
+
+        btn_bar = ctk.CTkFrame(body, fg_color="transparent")
+        btn_bar.pack(fill="x", pady=(4, 0))
+
+        def _submit():
+            nm = name_ent.get().strip()
+            if not nm:
+                messagebox.showerror(T("add_acct_title"), "계정 이름을 입력하십시오.", parent=dlg)
+                return
+            payload: dict = {"name": nm}
+            pt = port_ent.get().strip()
+            if pt:
+                try:
+                    payload["port"] = int(pt)
+                except ValueError:
+                    messagebox.showerror(T("add_acct_title"), "포트는 숫자여야 합니다.", parent=dlg)
+                    return
+            br = browser_var.get().strip().lower()
+            if br in ("edge", "chrome"):
+                payload["browser"] = br
+            pf = prof_ent.get().strip()
+            if pf:
+                payload["profile_dir"] = pf
+
+            def _post():
+                try:
+                    req = urllib.request.Request(
+                        f"{BASE}/api/accounts",
+                        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    )
+                    with urllib.request.urlopen(req, timeout=8):
+                        pass
+                    app_root.after(0, dlg.destroy)
+                except urllib.error.HTTPError as he:
+                    raw = he.read().decode("utf-8", errors="replace")
+                    try:
+                        detail = json.loads(raw).get("detail", raw)
+                    except Exception:
+                        detail = raw
+                    app_root.after(0, lambda d=detail: messagebox.showerror(T("add_acct_title"), str(d), parent=dlg))
+                except Exception as exc:
+                    app_root.after(0, lambda e=exc: messagebox.showerror(T("add_acct_title"), str(e), parent=dlg))
+
+            threading.Thread(target=_post, daemon=True).start()
+
+        ctk.CTkButton(btn_bar, text=T("btn_submit_add"), width=88, height=32,
+                      fg_color=C["primary"], hover_color="#4f46e5",
+                      font=ctk.CTkFont(size=11, weight="bold"),
+                      command=_submit).pack(side="right", padx=(6, 0))
+        ctk.CTkButton(btn_bar, text=T("btn_cancel"), width=74, height=32,
+                      fg_color=C["border"], text_color=C["text"], hover_color="#cbd5e1",
+                      command=dlg.destroy).pack(side="right")
+
+    def _verify_account_req(account_port=None):
+        from tkinter import messagebox
+
+        path = "/api/accounts/verify" if account_port is None else f"/api/accounts/{account_port}/verify"
+
+        def request_verify():
+            try:
+                urllib.request.urlopen(
+                    urllib.request.Request(f"{BASE}{path}", method="POST"), timeout=45
+                )
+            except urllib.error.HTTPError as he:
+                raw = he.read().decode("utf-8", errors="replace")
+                try:
+                    detail = json.loads(raw).get("detail", raw)
+                except Exception:
+                    detail = raw
+                app_root.after(0, lambda d=detail: messagebox.showerror(T("btn_verify"), str(d)))
+            except Exception as exc:
+                app_root.after(0, lambda e=exc: messagebox.showerror(T("btn_verify"), str(e)))
+
+        threading.Thread(target=request_verify, daemon=True).start()
+
+    add_acct_btn = ctk.CTkButton(wcard_hdr, text=T("btn_add_acct"), width=86, height=24,
+                                 fg_color=C["primary_lt"], text_color=C["primary"],
+                                 hover_color="#ddd6fe", corner_radius=6,
+                                 font=ctk.CTkFont(size=10, weight="bold"),
+                                 command=_open_add_account_dialog)
+    add_acct_btn.pack(side="right")
+    verify_all_btn = ctk.CTkButton(wcard_hdr, text=T("btn_verify_all"), width=74, height=24,
+                                   fg_color="#f1f5f9", text_color=C["text"],
+                                   hover_color="#e2e8f0", border_width=1, border_color=C["border"],
+                                   corner_radius=6, font=ctk.CTkFont(size=10, weight="bold"),
+                                   command=lambda: _verify_account_req(None))
+    verify_all_btn.pack(side="right", padx=(0, 6))
+    ctk.CTkFrame(wcard, height=1, fg_color=C["border"]).pack(fill="x", padx=16, pady=(6, 0))
     workers_container = ctk.CTkFrame(wcard, fg_color="transparent")
     workers_container.pack(fill="both", expand=True, padx=12, pady=(8, 12))
     worker_widgets = {}
@@ -908,11 +1067,25 @@ def _launch_main_gui(host: str, port: int, server_ok: bool = True):
                               fg_color=C["red_lt"], text_color=C["red"], hover_color="#fecaca",
                               corner_radius=8, font=ctk.CTkFont(size=12))
     reset_btn.pack(side="left", padx=(0, 6))
+    _quit_app_ref: list = [None]
+
+    def do_quit():
+        from tkinter import messagebox
+        if messagebox.askyesno(T("btn_quit"), T("confirm_quit")):
+            if _quit_app_ref[0]:
+                _quit_app_ref[0]()
+            else:
+                app_root.destroy()
+
     open_btn = ctk.CTkButton(btn_row, text=T("btn_open"),
                              command=lambda: webbrowser.open(f"{BASE}/dashboard"),
                              fg_color=C["primary_lt"], text_color=C["primary"], hover_color="#ddd6fe",
                              corner_radius=8, font=ctk.CTkFont(size=12))
-    open_btn.pack(side="left")
+    open_btn.pack(side="left", padx=(0, 6))
+    quit_btn = ctk.CTkButton(btn_row, text=T("btn_quit"), command=do_quit,
+                             fg_color="#f1f5f9", text_color=C["muted"], hover_color="#e2e8f0",
+                             corner_radius=8, font=ctk.CTkFont(size=12))
+    quit_btn.pack(side="left")
 
     # 태스크 큐 패널
     qcard = make_card(t1)
@@ -1385,8 +1558,17 @@ p{{margin:.6em 0}}
         purge_btn.configure(text=T("btn_purge"))
         reset_btn.configure(text=T("btn_reset"))
         open_btn.configure(text=T("btn_open"))
+        quit_btn.configure(text=T("btn_quit"))
         server_wait_lbl.configure(text=T("server_wait"))
         wcard_title_lbl.configure(text=T("card_workers"))
+        verify_all_btn.configure(text=T("btn_verify_all"))
+        add_acct_btn.configure(text=T("btn_add_acct"))
+        for _wmap in worker_widgets.values():
+            _wmap["verify_btn"].configure(text=T("btn_verify"))
+            _wmap["del_btn"].configure(text=T("btn_del_acct"))
+            _wmap["connect_btn"].configure(
+                text=T("btn_open_win") if _wmap.get("login_state") == "ok" else T("btn_connect")
+            )
         tcard_title_lbl.configure(text=T("card_task"))
         qcard_title_lbl.configure(text=T("card_queue"))
         hist_title_lbl.configure(text=T("hist_title"))
@@ -1601,12 +1783,51 @@ p{{margin:.6em 0}}
             server_wait_lbl.pack_forget()
         except Exception:
             pass
+        current_ports = {w.get("port") for w in ws}
+        for stale_pw in [p for p in list(worker_widgets.keys()) if p not in current_ports]:
+            try:
+                worker_widgets[stale_pw]["frame"].destroy()
+            except Exception:
+                pass
+            del worker_widgets[stale_pw]
+
+        def _fmt_verify_meta(w):
+            parts = []
+            ident = (w.get("login_identity") or "").strip()
+            if len(ident) > 36:
+                ident = ident[:35] + "…"
+            if ident:
+                parts.append(ident)
+            v_at = w.get("verified_at") or 0
+            detail = (w.get("verify_detail") or "").strip()
+            detail_map = {
+                "verified_live": T("verify_detail_live"),
+                "verified_login": T("verify_detail_login"),
+                "sso_redirect": T("verify_detail_sso"),
+                "composer_timeout": T("verify_detail_timeout"),
+                "login_timeout": T("verify_detail_timeout"),
+            }
+            sub_bits = []
+            if v_at and float(v_at) > 0:
+                import datetime as _dt
+                sub_bits.append(_dt.datetime.fromtimestamp(float(v_at)).strftime("%H:%M"))
+            if detail:
+                sub_bits.append(detail_map.get(detail, detail))
+            if sub_bits:
+                parts.append(" ".join(sub_bits))
+            return " · ".join(parts)
+
+        can_delete = len(ws) > 1
         for w in ws:
             pw = w.get("port")
-            is_busy = w.get("is_busy", False)
+            is_busy = bool(w.get("is_busy", False))
+            verifying = bool(w.get("verifying", False))
+            busy_now = is_busy or verifying
             login_state = w.get("login_state", "unknown")
             standby_rem = w.get("standby_remaining_sec", 0)
-            if is_busy:
+            if verifying:
+                s, col = T("worker_verifying"), C["primary"]
+            elif is_busy:
                 s, col = T("worker_busy"), C["primary"]
             elif login_state == "ok":
                 if standby_rem and standby_rem > 0:
@@ -1617,30 +1838,80 @@ p{{margin:.6em 0}}
                 s, col = T("worker_login"), C["red"]
             else:
                 s, col = T("worker_unknown"), C["muted"]
-            name_text = f"  {w.get('name', '')}  :{pw}"
+            name_text = f"{w.get('name', '')}  :{pw}"
+            meta_text = _fmt_verify_meta(w)
+            conn_label = T("btn_open_win") if login_state == "ok" else T("btn_connect")
+            conn_fg = "#eef2ff" if login_state == "ok" else C["primary"]
+            conn_tc = C["primary"] if login_state == "ok" else "#ffffff"
+            conn_hover = "#e0e7ff" if login_state == "ok" else "#4f46e5"
             if pw not in worker_widgets:
                 f = ctk.CTkFrame(workers_container, fg_color=C["bg"],
                                  corner_radius=8, border_width=1, border_color=C["border"])
                 f.pack(fill="x", pady=3)
-                nl = ctk.CTkLabel(f, text=name_text,
+                top_row = ctk.CTkFrame(f, fg_color="transparent")
+                top_row.pack(fill="x", padx=8, pady=(6, 2))
+                nl = ctk.CTkLabel(top_row, text=name_text,
                                   font=ctk.CTkFont(size=11, weight="bold"), text_color=C["text"])
-                nl.pack(side="left", padx=8, pady=6)
-                cb = ctk.CTkButton(f, text=T("btn_connect"), width=70, height=24,
-                                   fg_color=C["primary"], hover_color="#4f46e5", corner_radius=6,
-                                   font=ctk.CTkFont(size=10, weight="bold"),
-                                   command=lambda p=pw: _connect_account(p))
-                sl = ctk.CTkLabel(f, text=s, font=ctk.CTkFont(size=10, weight="bold"),
+                nl.pack(side="left")
+                sl = ctk.CTkLabel(top_row, text=s, font=ctk.CTkFont(size=10, weight="bold"),
                                   text_color=col)
-                sl.pack(side="right", padx=10)
-                worker_widgets[pw] = {"name_lbl": nl, "status_lbl": sl, "connect_btn": cb}
+                sl.pack(side="right")
+
+                bot_row = ctk.CTkFrame(f, fg_color="transparent")
+                bot_row.pack(fill="x", padx=8, pady=(0, 6))
+
+                vb = ctk.CTkButton(bot_row, text=T("btn_verify"), width=46, height=22,
+                                   fg_color="#ffffff", text_color=C["text"],
+                                   hover_color="#e2e8f0", border_width=1, border_color=C["border"],
+                                   corner_radius=6, font=ctk.CTkFont(size=9, weight="bold"),
+                                   command=lambda p=pw: _verify_account_req(p))
+                cb = ctk.CTkButton(bot_row, text=conn_label, width=64, height=22,
+                                   fg_color=conn_fg, text_color=conn_tc, hover_color=conn_hover,
+                                   corner_radius=6, font=ctk.CTkFont(size=9, weight="bold"),
+                                   command=lambda p=pw: _connect_account(p))
+                db_btn = ctk.CTkButton(bot_row, text=T("btn_del_acct"), width=42, height=22,
+                                       fg_color=C["red_lt"], text_color=C["red"],
+                                       hover_color="#fecaca", corner_radius=6,
+                                       font=ctk.CTkFont(size=9, weight="bold"),
+                                       command=lambda p=pw, nm=w.get("name", ""): _delete_account(p, nm))
+                ml = ctk.CTkLabel(bot_row, text=meta_text,
+                                  font=ctk.CTkFont(size=9), text_color=C["muted"],
+                                  anchor="w", wraplength=210, justify="left")
+                worker_widgets[pw] = {
+                    "frame": f, "name_lbl": nl, "status_lbl": sl, "meta_lbl": ml,
+                    "verify_btn": vb, "connect_btn": cb, "del_btn": db_btn,
+                    "login_state": login_state,
+                }
             else:
                 worker_widgets[pw]["name_lbl"].configure(text=name_text)
                 worker_widgets[pw]["status_lbl"].configure(text=s, text_color=col)
+                worker_widgets[pw]["meta_lbl"].configure(text=meta_text)
+                worker_widgets[pw]["login_state"] = login_state
+                worker_widgets[pw]["connect_btn"].configure(
+                    text=conn_label, fg_color=conn_fg, text_color=conn_tc, hover_color=conn_hover
+                )
+                worker_widgets[pw]["del_btn"].configure(command=lambda p=pw, nm=w.get("name", ""): _delete_account(p, nm))
+
+            ml_w = worker_widgets[pw]["meta_lbl"]
+            ver_b = worker_widgets[pw]["verify_btn"]
             btn = worker_widgets[pw]["connect_btn"]
-            if login_state == "ok" or is_busy:
+            del_b = worker_widgets[pw]["del_btn"]
+            if busy_now:
+                ver_b.pack_forget()
                 btn.pack_forget()
-            elif not btn.winfo_ismapped():
-                btn.pack(side="right", padx=(0, 2), pady=4)
+                del_b.pack_forget()
+            else:
+                if can_delete:
+                    if not del_b.winfo_ismapped():
+                        del_b.pack(side="right", padx=(4, 0))
+                else:
+                    del_b.pack_forget()
+                if not btn.winfo_ismapped():
+                    btn.pack(side="right", padx=(4, 0))
+                if not ver_b.winfo_ismapped():
+                    ver_b.pack(side="right", padx=(4, 0))
+            if not ml_w.winfo_ismapped():
+                ml_w.pack(side="left", fill="x", expand=True, padx=(0, 6))
 
     def _connect_account(account_port: int):
         from tkinter import messagebox
@@ -1653,6 +1924,30 @@ p{{margin:.6em 0}}
                 app_root.after(0, lambda e=exc: messagebox.showerror(T("btn_connect"), str(e)))
 
         threading.Thread(target=request_login, daemon=True).start()
+
+    def _delete_account(account_port: int, account_name: str):
+        from tkinter import messagebox
+
+        label = account_name or f":{account_port}"
+        if not messagebox.askyesno(T("btn_del_acct"), f"{label}{T('confirm_del_acct')}"):
+            return
+
+        def request_delete():
+            try:
+                req = urllib.request.Request(f"{BASE}/api/accounts/{account_port}", method="DELETE")
+                with urllib.request.urlopen(req, timeout=8):
+                    pass
+            except urllib.error.HTTPError as he:
+                raw = he.read().decode("utf-8", errors="replace")
+                try:
+                    detail = json.loads(raw).get("detail", raw)
+                except Exception:
+                    detail = raw
+                app_root.after(0, lambda d=detail: messagebox.showerror(T("btn_del_acct"), str(d)))
+            except Exception as exc:
+                app_root.after(0, lambda e=exc: messagebox.showerror(T("btn_del_acct"), str(e)))
+
+        threading.Thread(target=request_delete, daemon=True).start()
 
     def _apply_stats(stats):
         for key, (lbl, val, sub) in stat_refs.items():
@@ -1741,6 +2036,8 @@ p{{margin:.6em 0}}
                 pass
         app_root.destroy()
 
+    _quit_app_ref[0] = _quit_app
+
     def _show_window():
         app_root.deiconify()
         app_root.lift()
@@ -1777,34 +2074,76 @@ p{{margin:.6em 0}}
         if _tray_icon_ref[0] is None:
             threading.Thread(target=_start_tray, daemon=True).start()
 
+    _dyn_update_bar = [None]
+
+    def _poll_dynamic_release():
+        def _bg():
+            st = updater.check_for_update()
+            if st.get("has_update"):
+                ver = st.get("latest_version", "")
+
+                def _show_bar():
+                    if _dyn_update_bar[0] is not None:
+                        return
+                    bar = ctk.CTkFrame(app_root, fg_color="#eef2ff", corner_radius=8, border_width=1, border_color="#c7d2fe")
+                    bar.pack(fill="x", padx=14, pady=(8, 0), before=app_root.winfo_children()[0])
+                    lbl = ctk.CTkLabel(
+                        bar,
+                        text=f"⚡ 새 릴리스 v{ver} 출시됨 (현재 v{__version__}) — 클릭 시 자동 다운로드·교체 후 재시작합니다.",
+                        font=ctk.CTkFont(size=12, weight="bold"),
+                        text_color="#3730a3",
+                    )
+                    lbl.pack(side="left", padx=12, pady=6)
+
+                    def _do_apply():
+                        btn.configure(state="disabled", text="다운로드 및 교체 중...")
+                        def _apply_bg():
+                            try:
+                                updater.apply_update_and_prepare_restart()
+                                time.sleep(0.8)
+                                os._exit(0)
+                            except Exception as exc:
+                                app_root.after(0, lambda: (btn.configure(state="normal", text="재시도"), lbl.configure(text=f"업데이트 실패: {exc}")))
+                        threading.Thread(target=_apply_bg, daemon=True).start()
+
+                    btn = ctk.CTkButton(bar, text="지금 업데이트 & 자동 재시작", width=180, height=26, fg_color="#4f46e5", hover_color="#4338ca", command=_do_apply)
+                    btn.pack(side="right", padx=10, pady=5)
+                    _dyn_update_bar[0] = bar
+
+                app_root.after(0, _show_bar)
+
+        threading.Thread(target=_bg, daemon=True).start()
+        app_root.after(1800000, _poll_dynamic_release)
+
     app_root.protocol("WM_DELETE_WINDOW", _on_close)
     sse_thread = threading.Thread(target=_sse_reader, daemon=True)
     sse_thread.start()
+    app_root.after(15000, _poll_dynamic_release)
     _bring_to_front(app_root)
     app_root.mainloop()
 
 
-def _bring_existing_window_to_front():
-    """이미 실행 중인 GUI 창을 앞으로 가져온다."""
+def _bring_existing_window_to_front() -> bool:
+    """이미 실행 중인 GUI 창(트레이로 숨겨진 상태 포함)을 찾아 화면 앞으로 복원한다."""
     try:
         import ctypes, ctypes.wintypes
         found = []
         def _cb(hwnd, lp):
-            if not ctypes.windll.user32.IsWindowVisible(hwnd):
-                return True
             buf = ctypes.create_unicode_buffer(300)
             ctypes.windll.user32.GetWindowTextW(hwnd, buf, 300)
             t = buf.value.strip()
-            if "amv-cp-bridge" in t and ":11" in t:
+            if t == "amv-cp-bridge" or t.startswith("amv-cp-bridge "):
                 found.append(hwnd)
             return True
         FN = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
         ctypes.windll.user32.EnumWindows(FN(_cb), 0)
         for hwnd in found:
-            ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+            ctypes.windll.user32.ShowWindow(hwnd, 5)  # SW_SHOW (트레이 숨김 해제)
+            ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE (최소화 복원)
             ctypes.windll.user32.SetForegroundWindow(hwnd)
+        return len(found) > 0
     except Exception:
-        pass
+        return False
 
 
 def _extract_user_query(text: str) -> str:
@@ -1816,8 +2155,12 @@ def _extract_user_query(text: str) -> str:
     return text
 
 
+_GUI_MUTEX_HANDLE = None
+
+
 def launch_gui(host: str = "127.0.0.1", port: int = 11500):
     # Windows 단일 인스턴스 체크
+    global _GUI_MUTEX_HANDLE
     import sys as _sys
     if _sys.platform == "win32":
         try:
@@ -1825,8 +2168,9 @@ def launch_gui(host: str = "127.0.0.1", port: int = 11500):
             _MUTEX_NAME = "Global\\amv-cp-bridge-gui-singleton"
             _mutex = _ct.windll.kernel32.CreateMutexW(None, False, _MUTEX_NAME)
             if _ct.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
-                _bring_existing_window_to_front()
-                return
+                if _bring_existing_window_to_front():
+                    return
+            _GUI_MUTEX_HANDLE = _mutex
         except Exception:
             pass
 

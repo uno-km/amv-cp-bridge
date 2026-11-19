@@ -103,7 +103,7 @@ def test_gateway_images_generations_and_error_mapping(tmp_path: Path, monkeypatc
 
 
 def test_gateway_account_close_and_purge(tmp_path: Path, monkeypatch) -> None:
-    w1 = engine.CopilotWorker(9334, "ajou", str(tmp_path / "p9334"))
+    w1 = engine.CopilotWorker(9334, "sub", str(tmp_path / "p9334"))
     w2 = engine.CopilotWorker(9333, "main", str(tmp_path / "p9333"))
     cleanups: list[int] = []
     kills: list[tuple[int, bool]] = []
@@ -138,7 +138,7 @@ def test_gateway_account_close_and_purge(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_find_browser_binary_preserves_last_browser_and_browser_hint(tmp_path: Path) -> None:
-    chrome_prof = tmp_path / "ajou"
+    chrome_prof = tmp_path / "sub"
     chrome_prof.mkdir()
     (chrome_prof / "Last Browser").write_bytes(b"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe\x00")
     assert Path(engine._find_browser_binary(str(chrome_prof))).name.lower() == "chrome.exe"
@@ -157,7 +157,7 @@ def test_find_browser_binary_preserves_last_browser_and_browser_hint(tmp_path: P
 
 
 def test_kill_browser_process_protects_external_sessions(tmp_path: Path, monkeypatch) -> None:
-    w = engine.CopilotWorker(9334, "ajou", str(tmp_path / "prof"))
+    w = engine.CopilotWorker(9334, "sub", str(tmp_path / "prof"))
     monkeypatch.setattr(w, "get_listening_pids", lambda: [4242])
     killed_cmds: list[list[str]] = []
     monkeypatch.setattr(subprocess, "run", lambda cmd, **kwargs: killed_cmds.append(list(cmd)))
@@ -179,7 +179,7 @@ def test_pool_reloads_deprioritizes_required_and_midstream_failover(tmp_path: Pa
     cfg_dir.mkdir()
     acc_file = cfg_dir / "accounts.json"
     acc_file.write_text(
-        json.dumps([{"port": 9334, "name": "ajou", "profile_dir": str(tmp_path / "p9334"), "browser": "chrome"}]),
+        json.dumps([{"port": 9334, "name": "sub", "profile_dir": str(tmp_path / "p9334"), "browser": "chrome"}]),
         encoding="utf-8",
     )
 
@@ -194,7 +194,7 @@ def test_pool_reloads_deprioritizes_required_and_midstream_failover(tmp_path: Pa
 
     acc_file.write_text(
         json.dumps([
-            {"port": 9334, "name": "ajou", "profile_dir": str(tmp_path / "p9334"), "browser": "chrome"},
+            {"port": 9334, "name": "sub", "profile_dir": str(tmp_path / "p9334"), "browser": "chrome"},
             {"port": 9332, "name": "third", "profile_dir": str(tmp_path / "p9332"), "browser": "edge"},
         ]),
         encoding="utf-8",
@@ -241,7 +241,7 @@ def test_pool_true_concurrent_parallelism_across_two_workers(tmp_path: Path, mon
     acc_file = cfg_dir / "accounts.json"
     acc_file.write_text(
         json.dumps([
-            {"port": 9334, "name": "ajou", "profile_dir": str(tmp_path / "p9334")},
+            {"port": 9334, "name": "sub", "profile_dir": str(tmp_path / "p9334")},
             {"port": 9333, "name": "main", "profile_dir": str(tmp_path / "p9333")},
         ]),
         encoding="utf-8",
@@ -276,7 +276,7 @@ def test_pool_true_concurrent_parallelism_across_two_workers(tmp_path: Path, mon
 
 
 def test_worker_stream_query_done_stable_completes(tmp_path: Path, monkeypatch) -> None:
-    w = engine.CopilotWorker(9334, "ajou", str(tmp_path / "prof"))
+    w = engine.CopilotWorker(9334, "sub", str(tmp_path / "prof"))
     w.mode = "hot"
 
     eval_calls = {"n": 0}

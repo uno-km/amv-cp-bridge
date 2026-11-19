@@ -39,10 +39,12 @@ from .engine import (
     CopilotQuotaError,
     CopilotTransientError,
     event_bus,
+    is_non_interactive_desktop,
 )
 from .notifications import notify_login_required
 from .reasoning import ReasoningStreamParser, extract_reasoning_and_content
 from .telemetry_db import telemetry_db
+from . import updater
 
 # --- Rate Limiter (per-IP, token bucket) ---
 _RATE_LIMIT_RPM = int(os.environ.get("COPILOT_RATE_LIMIT_RPM", "30"))
@@ -82,7 +84,7 @@ app.add_middleware(
     allow_origins=ALLOWED_ORIGINS,
     allow_origin_regex=r"^chrome-extension://.*$",
     allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization"],
 )
 
@@ -263,6 +265,93 @@ async def api_update_settings(req: SettingsUpdateRequest):
         "settings": updated,
     }
 
+
+@app.get("/api/update/check")
+async def api_update_check():
+    """GitHub Releases 최신 버전과 현재 버전을 비교해 동적 업데이트 가능 여부를 반환한다."""
+    return await asyncio.to_thread(updater.check_for_update)
+
+
+@app.post("/api/update/apply")
+async def api_update_apply():
+    """최신 릴리스 EXE를 다운로드하고 핫스왑 자동 재시작 헬퍼를 실행한 뒤 현재 프로세스를 종료한다."""
+    try:
+        res = await asyncio.to_thread(updater.apply_update_and_prepare_restart)
+    except updater.UpdateError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    async def _deferred_exit():
+        await asyncio.sleep(0.8)
+        os._exit(0)
+
+    if res.get("should_exit"):
+        asyncio.create_task(_deferred_exit())
+    return res
+
+class AccountCreateRequest(BaseModel):
+    name: str = Field(..., min_length=1, description="Account display name")
+    port: Optional[int] = Field(None, description="Optional CDP debugging port (1024-65535)")
+    profile_dir: Optional[str] = Field(None, description="Optional browser profile directory path")
+    browser: Optional[str] = Field(None, description="Optional browser preference ('edge' or 'chrome')")
+
+
+@app.get("/api/accounts")
+async def api_list_accounts():
+    """등록된 Copilot 계정 목록과 실시간 상태를 반환한다."""
+    return {"ok": True, "accounts": engine.list_accounts()}
+
+
+@app.post("/api/accounts", status_code=201)
+async def api_add_account(req: AccountCreateRequest):
+    """새 Copilot 계정을 accounts.json 및 실시간 워커 풀에 추가한다."""
+    try:
+        account = engine.add_account(
+            req.name,
+            port=req.port,
+            profile_dir=req.profile_dir,
+            browser=req.browser,
+        )
+        return {"ok": True, "account": account, "workers": engine._worker_brief()}
+    except ValueError as exc:
+        msg = str(exc)
+        status = 409 if "이미" in msg else 400
+        raise HTTPException(status_code=status, detail=msg)
+
+
+@app.delete("/api/accounts/{port}")
+async def api_delete_account(port: int):
+    """지정 포트의 Copilot 계정을 워커 풀과 accounts.json에서 삭제한다."""
+    try:
+        res = await engine.remove_account(port)
+        res["workers"] = engine._worker_brief()
+        return res
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/accounts/verify")
+async def api_verify_all_accounts():
+    """등록된 모든 비사용 계정의 Copilot 세션을 실시간 점검하고 계정 정보를 반환한다."""
+    results = await engine.verify_all()
+    return {"ok": True, "results": results, "workers": engine._worker_brief()}
+
+
+@app.post("/api/accounts/{port}/verify")
+async def api_verify_account(port: int):
+    """단일 계정의 Copilot URL 진입 가능 여부와 실제 로그인 계정을 실시간 점검한다."""
+    try:
+        res = await engine.verify_account(port)
+        return {"ok": res.get("ok", False), "result": res, "workers": engine._worker_brief()}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
 @app.post("/api/accounts/{port}/login", status_code=202)
 async def api_account_login(port: int):
     """계정 로그인 창을 띄우고 연결 상태를 확인한다. 결과는 SSE accounts 이벤트로 전달된다."""
@@ -271,6 +360,14 @@ async def api_account_login(port: int):
         raise HTTPException(status_code=404, detail=f"등록되지 않은 계정 포트입니다: {port}")
     if worker.is_busy():
         raise HTTPException(status_code=409, detail=f"{worker.name} 계정이 사용 중입니다.")
+    if is_non_interactive_desktop():
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "현재 게이트웨이가 숨김/격리 백그라운드 데스크톱에서 실행 중이라 로그인 창을 화면에 표시할 수 없습니다. "
+                "해당 백그라운드 서버를 종료한 뒤 start_gui.bat으로 직접 실행해 주세요."
+            ),
+        )
     asyncio.create_task(engine.open_login(port))
     return {"ok": True, "port": port}
 
@@ -862,11 +959,22 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .dual{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:16px}
     @media(max-width:720px){.dual{grid-template-columns:1fr}}
     /* ── Worker Item ── */
-    .wi{display:flex;align-items:center;justify-content:space-between;padding:9px 12px;background:var(--s);border:1px solid var(--bdr);border-radius:var(--rad-sm);margin-bottom:6px}
+    .wi{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:9px 12px;background:var(--s);border:1px solid var(--bdr);border-radius:var(--rad-sm);margin-bottom:6px}
     .wn{font-weight:600;font-size:.82rem;color:var(--t)}
+    .ws-id{font-size:.7rem;color:#4f46e5;font-weight:600;margin-top:2px;word-break:break-all}
     .ws{font-size:.68rem;color:var(--m);margin-top:2px}
+    .w-actions{display:flex;align-items:center;gap:6px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end}
     .wb{font-size:.68rem;padding:3px 8px;border-radius:99px;font-weight:700}
-    .b-idle{background:#dcfce7;color:#16a34a}.b-busy{background:#e0e7ff;color:#4338ca}.b-off{background:#f1f5f9;color:#94a3b8}
+    .b-idle{background:#dcfce7;color:#16a34a}.b-busy{background:#e0e7ff;color:#4338ca}.b-off{background:#f1f5f9;color:#94a3b8}.b-req{background:#fee2e2;color:#dc2626}
+    .btn-xs{padding:3px 9px;border-radius:6px;font-size:.68rem;font-weight:700;cursor:pointer;border:1px solid transparent;transition:.15s;font-family:inherit}
+    .btn-xs-pri{background:var(--p);color:#fff}.btn-xs-pri:hover{background:#4f46e5}
+    .btn-xs-chk{background:#fff;color:#475569;border-color:#cbd5e1}.btn-xs-chk:hover{background:#f1f5f9;color:#1e293b}
+    .btn-xs-del{background:#fff0f0;color:#dc2626;border-color:#fecaca}.btn-xs-del:hover{background:#fecaca}
+    .btn-xs-add{background:var(--s);color:var(--p);border:1px solid #c7d2fe}.btn-xs-add:hover{background:#ede9fe}
+    .form-field{margin-bottom:12px}
+    .form-field label{display:block;font-size:.76rem;font-weight:700;color:var(--t);margin-bottom:4px}
+    .form-input{width:100%;padding:8px 10px;border:1px solid var(--bdr);border-radius:8px;font-size:.84rem;font-family:inherit;background:#fff;color:var(--t)}
+    .form-hint{font-size:.7rem;color:var(--m);margin-top:3px}
     /* ── Task box ── */
     .task-box{font-family:var(--mono);font-size:.78rem;background:var(--s);border:1px solid var(--bdr);padding:12px;border-radius:var(--rad-sm);min-height:68px;color:var(--m);line-height:1.6;word-break:break-all}
     /* ── Chart ── */
@@ -987,7 +1095,15 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <!-- Worker + Task -->
       <div class="dual">
         <div class="card">
-          <div class="card-title"><span data-i="workers_title">계정 상태</span><span style="font-size:.7rem;color:var(--p)" id="workerSummary"></span></div>
+          <div class="card-title">
+            <span data-i="workers_title">계정 상태</span>
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="font-size:.7rem;color:var(--p)" id="workerSummary"></span>
+              <button type="button" class="btn-xs btn-xs-chk" onclick="verifyAllAccounts()" data-i="verify_all_btn">전체 점검</button>
+              <button type="button" class="btn-xs btn-xs-add" onclick="openAddAcctModal()" data-i="add_acct_btn">+ 계정 추가</button>
+            </div>
+          </div>
+          <div id="acctNotice" style="display:none;font-size:.76rem;padding:8px 11px;border-radius:8px;margin-bottom:8px;line-height:1.45"></div>
           <div id="workersList"></div>
         </div>
         <div class="card">
@@ -1193,6 +1309,44 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   </div><!-- .content -->
 </div><!-- .app -->
 
+<!-- 계정 추가 모달 -->
+<div id="addAcctModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9999;align-items:center;justify-content:center">
+  <div style="background:#fff;border-radius:16px;width:min(92vw,440px);overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.25)">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid #e2e8f0">
+      <span style="font-weight:700;font-size:.92rem;color:#1e293b" data-i="add_acct_title">Copilot 계정 추가</span>
+      <button onclick="closeAddAcctModal()" style="background:#f1f5f9;border:none;border-radius:8px;width:28px;height:28px;cursor:pointer;font-size:1rem;color:#64748b">✕</button>
+    </div>
+    <div style="padding:16px 18px">
+      <div class="form-field">
+        <label data-i="acct_name_lbl">계정 이름 *</label>
+        <input type="text" id="addAcctName" class="form-input" placeholder="예: 학교 계정 / 보조 계정">
+      </div>
+      <div class="form-field">
+        <label data-i="acct_port_lbl">디버깅 포트 (선택)</label>
+        <input type="number" id="addAcctPort" class="form-input" placeholder="비워두면 자동 할당 (예: 9334)" min="1024" max="65535">
+        <div class="form-hint" data-i="acct_port_hint">다른 브라우저와 겹치지 않는 포트 번호입니다.</div>
+      </div>
+      <div class="form-field">
+        <label data-i="acct_browser_lbl">브라우저</label>
+        <select id="addAcctBrowser" class="form-input">
+          <option value="">자동 (Edge 우선)</option>
+          <option value="edge">Microsoft Edge</option>
+          <option value="chrome">Google Chrome</option>
+        </select>
+      </div>
+      <div class="form-field">
+        <label data-i="acct_prof_lbl">프로필 폴더 경로 (선택)</label>
+        <input type="text" id="addAcctProf" class="form-input" placeholder="비워두면 ~/copilot_profile_&lt;포트&gt; 자동 생성">
+      </div>
+      <div id="addAcctErr" style="display:none;color:#dc2626;font-size:.76rem;margin-bottom:10px"></div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:6px">
+        <button type="button" class="btn btn-ghost" onclick="closeAddAcctModal()" data-i="cancel_btn">취소</button>
+        <button type="button" class="btn-save" style="padding:8px 18px;font-size:.82rem" onclick="submitAddAccount()" data-i="submit_add_btn">추가</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- 상세보기 모달 -->
 <div id="recModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9999;align-items:center;justify-content:center">
   <div style="background:#fff;border-radius:16px;width:min(92vw,760px);max-height:88vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.25)">
@@ -1219,7 +1373,15 @@ const L = {
     setup_title:"설치 상태", chart_title:"최근 14일 사용량", history_title:"최근 사용 기록 (20건)",
     th_time:"시간", th_prompt:"프롬프트", th_tokens:"토큰", th_latency:"지연", th_source:"소스", th_result:"결과",
     no_data:"기록 없음", purge_btn:"메모리 정리", reset_btn:"통계 초기화",
-    busy:"작업 중", acct_ok:"연결됨", acct_unknown:"연결 확인 전", acct_required:"로그인 필요",
+    busy:"작업 중", acct_verifying:"점검 중...", acct_ok:"연결됨", acct_unknown:"연결 확인 전", acct_required:"로그인 필요",
+    verify_all_btn:"전체 점검", btn_verify:"점검", btn_open_win:"창 열기",
+    vd_live:"실시간 확인", vd_login:"로그인 확인", vd_sso:"SSO 재로그인 필요", vd_timeout:"응답창 미감지",
+    add_acct_btn:"+ 계정 추가", add_acct_title:"Copilot 계정 추가",
+    acct_name_lbl:"계정 이름 *", acct_port_lbl:"디버깅 포트 (선택)", acct_port_hint:"다른 브라우저와 겹치지 않는 포트 번호입니다.",
+    acct_browser_lbl:"브라우저", acct_prof_lbl:"프로필 폴더 경로 (선택)",
+    cancel_btn:"취소", submit_add_btn:"추가",
+    btn_connect:"연결", btn_delete:"삭제",
+    confirm_del_acct:" 계정을 삭제하시겠습니까? (프로필 폴더는 보존됩니다)",
     s_gw:"게이트웨이", s_ext:"브라우저 확장프로그램", s_mcp:"MCP 서버", s_db:"텔레메트리 DB",
     installed:"실행 중", unknown:"설치 안내",
     confirm_purge:"Edge 잔여 프로세스를 정리하시겠습니까?", confirm_reset:"모든 사용 기록을 삭제하시겠습니까?",
@@ -1260,7 +1422,15 @@ const L = {
     setup_title:"Installation Status", chart_title:"Usage (Last 14 Days)", history_title:"Recent Activity (20)",
     th_time:"Time", th_prompt:"Prompt", th_tokens:"Tokens", th_latency:"Latency", th_source:"Source", th_result:"Result",
     no_data:"No records", purge_btn:"Purge Memory", reset_btn:"Reset Stats",
-    busy:"Busy", acct_ok:"Connected", acct_unknown:"Not checked", acct_required:"Sign-in required",
+    busy:"Busy", acct_verifying:"Checking...", acct_ok:"Connected", acct_unknown:"Not checked", acct_required:"Sign-in required",
+    verify_all_btn:"Verify All", btn_verify:"Verify", btn_open_win:"Open Window",
+    vd_live:"Live verified", vd_login:"Sign-in verified", vd_sso:"SSO sign-in required", vd_timeout:"Composer timeout",
+    add_acct_btn:"+ Add Account", add_acct_title:"Add Copilot Account",
+    acct_name_lbl:"Account Name *", acct_port_lbl:"Debugging Port (Optional)", acct_port_hint:"Port number not used by other browsers.",
+    acct_browser_lbl:"Browser", acct_prof_lbl:"Profile Directory (Optional)",
+    cancel_btn:"Cancel", submit_add_btn:"Add",
+    btn_connect:"Connect", btn_delete:"Delete",
+    confirm_del_acct:" account will be removed. (Profile folder is preserved)",
     s_gw:"Gateway", s_ext:"Browser Extension", s_mcp:"MCP Server", s_db:"Telemetry DB",
     installed:"Running", unknown:"Setup Guide",
     confirm_purge:"Purge all Edge processes?", confirm_reset:"Delete all usage records?",
@@ -1395,13 +1565,47 @@ async function updateDashboard(){
     document.getElementById('taskPreview').textContent=busy?(st.current_task||'...'):t('no_task');
     if(st.workers){
       document.getElementById('workerSummary').textContent=st.total_accounts+' accts';
+      const canDelete = st.workers.length > 1;
+      const detailLabel = (d) => {
+        if(!d) return '';
+        if(d==='verified_live') return t('vd_live');
+        if(d==='verified_login') return t('vd_login');
+        if(d==='sso_redirect') return t('vd_sso');
+        if(d==='composer_timeout' || d==='login_timeout') return t('vd_timeout');
+        return d;
+      };
+      const fmtTime = (ts) => {
+        if(!ts || ts <= 0) return '';
+        const dt = new Date(ts * 1000);
+        return String(dt.getHours()).padStart(2,'0') + ':' + String(dt.getMinutes()).padStart(2,'0');
+      };
       document.getElementById('workersList').innerHTML=st.workers.map(w=>{
-        const cls=w.is_busy?'b-busy':(w.login_state==='ok'?'b-idle':'b-off');
-        let txt=w.is_busy?t('busy'):t(w.login_state==='ok'?'acct_ok':(w.login_state==='required'?'acct_required':'acct_unknown'));
-        if(!w.is_busy && w.is_alive && w.standby_remaining_sec > 0){
+        const busyNow = w.is_busy || w.verifying;
+        const cls = busyNow ? 'b-busy' : (w.login_state==='ok' ? 'b-idle' : (w.login_state==='required' ? 'b-req' : 'b-off'));
+        let txt = w.verifying
+          ? t('acct_verifying')
+          : (w.is_busy ? t('busy') : t(w.login_state==='ok' ? 'acct_ok' : (w.login_state==='required' ? 'acct_required' : 'acct_unknown')));
+        if(!busyNow && w.is_alive && w.standby_remaining_sec > 0){
           txt += ' (' + Math.round(w.standby_remaining_sec) + 's)';
         }
-        return `<div class="wi"><div><div class="wn">${esc(w.name)}</div><div class="ws">port ${w.port}</div></div><span class="wb ${cls}">${txt}</span></div>`;
+        const metaParts = ['port ' + w.port];
+        const tsStr = fmtTime(w.verified_at);
+        if(tsStr) metaParts.push(tsStr);
+        const dStr = detailLabel(w.verify_detail);
+        if(dStr) metaParts.push(dStr);
+        const idHtml = w.login_identity ? `<div class="ws-id">${esc(w.login_identity)}</div>` : '';
+        const verifyBtn = !busyNow
+          ? `<button type="button" class="btn-xs btn-xs-chk" onclick="verifyAccount(${w.port})">${t('btn_verify')}</button>`
+          : '';
+        const connBtn = !busyNow
+          ? (w.login_state === 'ok'
+              ? `<button type="button" class="btn-xs btn-xs-chk" onclick="connectAccount(${w.port})">${t('btn_open_win')}</button>`
+              : `<button type="button" class="btn-xs btn-xs-pri" onclick="connectAccount(${w.port})">${t('btn_connect')}</button>`)
+          : '';
+        const delBtn = (!busyNow && canDelete)
+          ? `<button type="button" class="btn-xs btn-xs-del" onclick="deleteAccount(${w.port}, ${JSON.stringify(w.name||'')})">${t('btn_delete')}</button>`
+          : '';
+        return `<div class="wi"><div><div class="wn">${esc(w.name)}</div>${idHtml}<div class="ws">${esc(metaParts.join(' · '))}</div></div><div class="w-actions">${verifyBtn}${connBtn}${delBtn}<span class="wb ${cls}">${txt}</span></div></div>`;
       }).join('');
     }
     document.getElementById('todayQ').textContent=stats.today.queries.toLocaleString();
@@ -1468,6 +1672,117 @@ async function resetStats(){
   try{await fetch('/api/stats/reset',{method:'POST'});updateDashboard();updateChart();}catch(e){alert(e);}
 }
 
+function openAddAcctModal(){
+  document.getElementById('addAcctName').value='';
+  document.getElementById('addAcctPort').value='';
+  document.getElementById('addAcctBrowser').value='';
+  document.getElementById('addAcctProf').value='';
+  const err=document.getElementById('addAcctErr');
+  err.style.display='none'; err.textContent='';
+  document.getElementById('addAcctModal').style.display='flex';
+  document.getElementById('addAcctName').focus();
+}
+function closeAddAcctModal(){document.getElementById('addAcctModal').style.display='none';}
+document.getElementById('addAcctModal').addEventListener('click',function(e){if(e.target===this)closeAddAcctModal();});
+
+async function submitAddAccount(){
+  const name=document.getElementById('addAcctName').value.trim();
+  const portRaw=document.getElementById('addAcctPort').value.trim();
+  const browser=document.getElementById('addAcctBrowser').value;
+  const profileDir=document.getElementById('addAcctProf').value.trim();
+  const err=document.getElementById('addAcctErr');
+  if(!name){ err.textContent='계정 이름을 입력하십시오.'; err.style.display='block'; return; }
+  const body={name};
+  if(portRaw){ body.port=parseInt(portRaw,10); }
+  if(browser){ body.browser=browser; }
+  if(profileDir){ body.profile_dir=profileDir; }
+  try{
+    const res=await fetch('/api/accounts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const data=await res.json();
+    if(!res.ok){ err.textContent=data.detail||'추가 실패'; err.style.display='block'; return; }
+    closeAddAcctModal();
+    updateDashboard();
+  }catch(e){ err.textContent=String(e); err.style.display='block'; }
+}
+
+function showAcctNotice(kind, text){
+  const el=document.getElementById('acctNotice');
+  if(!el) return;
+  const styles={
+    info:{bg:'#eef2ff',fg:'#4338ca',bd:'#c7d2fe'},
+    ok:{bg:'#dcfce7',fg:'#15803d',bd:'#bbf7d0'},
+    warn:{bg:'#fee2e2',fg:'#b91c1c',bd:'#fecaca'}
+  };
+  const s=styles[kind]||styles.info;
+  el.style.display='block';
+  el.style.background=s.bg;
+  el.style.color=s.fg;
+  el.style.border='1px solid '+s.bd;
+  el.textContent=text;
+}
+
+async function verifyAccount(port){
+  showAcctNotice('info', '포트 '+port+' 실시간 Copilot 세션을 점검 중입니다...');
+  setTimeout(updateDashboard, 150);
+  try{
+    const res=await fetch('/api/accounts/'+port+'/verify',{method:'POST'});
+    const data=await res.json();
+    if(!res.ok){
+      showAcctNotice('warn', data.detail||'점검 실패');
+    } else {
+      const r=data.result||{};
+      if(r.ok){
+        const who=r.login_identity?(' ('+r.login_identity+')'):'';
+        showAcctNotice('ok', (r.name||('port '+port))+': 실시간 로그인 활성 확인'+who);
+      } else {
+        const why=r.verify_detail==='sso_redirect'?'SSO 재로그인이 필요합니다':(r.verify_detail||'로그인이 필요합니다');
+        showAcctNotice('warn', (r.name||('port '+port))+': '+why+'. 오른쪽 [연결] 버튼을 눌러 로그인 창을 열어 주세요.');
+      }
+    }
+    updateDashboard();
+  }catch(e){showAcctNotice('warn', String(e));}
+}
+
+async function verifyAllAccounts(){
+  showAcctNotice('info', '등록된 전체 계정의 실시간 세션을 순차 점검 중입니다...');
+  setTimeout(updateDashboard, 150);
+  try{
+    const res=await fetch('/api/accounts/verify',{method:'POST'});
+    const data=await res.json();
+    if(!res.ok){
+      showAcctNotice('warn', data.detail||'전체 점검 실패');
+    } else {
+      const list=data.results||[];
+      const need=list.filter(x=>!x.ok && !x.skipped);
+      if(need.length===0){
+        showAcctNotice('ok', '전체 '+list.length+'개 계정 모두 로그인 활성 상태입니다.');
+      } else {
+        showAcctNotice('warn', '재로그인 필요: '+need.map(x=>(x.name||x.port)).join(', ')+' — 해당 계정의 [연결] 버튼을 눌러 주세요.');
+      }
+    }
+    updateDashboard();
+  }catch(e){showAcctNotice('warn', String(e));}
+}
+
+async function connectAccount(port){
+  showAcctNotice('info', '포트 '+port+' 로그인 브라우저 창을 여는 중입니다. 창이 뜨면 로그인을 완료해 주세요.');
+  try{
+    const res=await fetch('/api/accounts/'+port+'/login',{method:'POST'});
+    if(!res.ok){ const d=await res.json(); showAcctNotice('warn', d.detail||'연결 요청 실패'); }
+    setTimeout(updateDashboard, 200);
+  }catch(e){showAcctNotice('warn', String(e));}
+}
+
+async function deleteAccount(port, name){
+  if(!confirm((name||('port '+port))+t('confirm_del_acct'))) return;
+  try{
+    const res=await fetch('/api/accounts/'+port,{method:'DELETE'});
+    const data=await res.json();
+    if(!res.ok){ alert(data.detail||'삭제 실패'); return; }
+    updateDashboard();
+  }catch(e){alert(e);}
+}
+
 // ── Settings UI Handler ──
 let currentSettings = { mode: 'cold', standby_timeout_sec: 300, enable_deepthink: false };
 
@@ -1530,11 +1845,63 @@ async function saveSettings(){
   }
 }
 
+// ── Dynamic GitHub Release Auto-Update Banner ──
+async function checkDynamicRelease(){
+  try{
+    const d = await fetch('/api/update/check').then(r=>r.json());
+    let bar = document.getElementById('amvDynamicUpdateBanner');
+    if(d && d.has_update){
+      if(!bar){
+        bar = document.createElement('div');
+        bar.id = 'amvDynamicUpdateBanner';
+        bar.style.cssText = 'background:#eef2ff;border:1px solid #c7d2fe;color:#3730a3;padding:10px 16px;border-radius:10px;margin:10px auto;max-width:1280px;display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:13px;font-weight:600;';
+        document.body.insertBefore(bar, document.body.firstChild);
+      }
+      bar.innerHTML = '';
+      const span = document.createElement('span');
+      span.textContent = `⚡ 새 버전 v${d.latest_version} 출시됨 (현재 v${d.current_version}) — 클릭 시 자동 다운로드·교체 후 재시작합니다.`;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = '지금 업데이트 및 자동 재시작';
+      btn.style.cssText = 'background:#4f46e5;color:#fff;border:none;border-radius:7px;padding:6px 12px;cursor:pointer;font-weight:700;font-size:12px;';
+      btn.onclick = async ()=>{
+        if(!confirm(`새 버전 v${d.latest_version}을 다운로드하여 자동 교체 및 재시작할까요?`)) return;
+        btn.disabled = true;
+        btn.textContent = '다운로드 및 교체 중...';
+        try{
+          const r = await fetch('/api/update/apply', {method:'POST'});
+          if(r.ok) span.textContent = `✓ v${d.latest_version} 적용 중 — 곧 새 버전으로 자동 재시작됩니다.`;
+          else { btn.disabled = false; btn.textContent = '재시도'; }
+        }catch(_){
+          span.textContent = '업데이트 재시작이 시작되었습니다. 잠시 후 새로고침하세요.';
+        }
+      };
+      bar.appendChild(span);
+      bar.appendChild(btn);
+    }else if(bar){
+      bar.remove();
+    }
+  }catch(_){}
+}
+
 // ── Boot ──
 initChart();
 updateSetupPanel();
 updateDashboard();
 loadSettingsUI();
+checkDynamicRelease();
+setInterval(checkDynamicRelease, 1800000);
+try{
+  const _es = new EventSource('/api/stream');
+  _es.onmessage = (ev)=>{
+    try{
+      const d = JSON.parse(ev.data);
+      if(d.type==='accounts' || d.type==='task_start' || d.type==='task_done' || d.type==='settings_updated'){
+        updateDashboard();
+      }
+    }catch(_){}
+  };
+}catch(_){}
 </script>
 </body>
 </html>

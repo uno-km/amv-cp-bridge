@@ -1,40 +1,22 @@
-# Python
 __pycache__/
 *.py[cod]
-*.pyo
-*.pyd
+*$py.class
 *.egg-info/
-*.egg
-.eggs/
-.venv/
-venv/
-env/
-*.spec.bak
-
-# PyInstaller build artifacts (keep spec and scripts/build, delete intermediates)
-/build/
 /dist/
-
-# OS
-.DS_Store
-Thumbs.db
-desktop.ini
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# Logs & DB (local data, not for repo)
-*.log
-~/.amv_cp_bridge/
-
-# Secrets
+/build/
+.pytest_cache/
 .env
-*.env
-accounts.json
-
-# Temp
-*.tmp
+.env.*
+*.log
+*.db
+*.sqlite*
 *.bak
+*.new
+*profile*/
+copilot_profile*/
+gemini_profile*/
+accounts.json
+account_state.json
+account_meta.json
+settings.json
+last_seen_version

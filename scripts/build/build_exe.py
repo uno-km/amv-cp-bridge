@@ -143,13 +143,15 @@ def self_test() -> str:
 def write_report(version: str, use_upx: bool) -> dict:
     raw = json.loads(RAW_REPORT.read_text(encoding="utf-8"))["raw_bytes"]
     final = EXE.stat().st_size
+    sha256 = hashlib.sha256(EXE.read_bytes()).hexdigest()
+    (DIST / f"{EXE.name}.sha256").write_text(f"{sha256}  {EXE.name}\n", encoding="utf-8")
     report = {
         "version": version,
         "upx": use_upx,
         "raw_bytes": raw,
         "exe_bytes": final,
         "compression_percent": round((1 - final / raw) * 100, 1),
-        "sha256": hashlib.sha256(EXE.read_bytes()).hexdigest(),
+        "sha256": sha256,
     }
     REPORT.write_text(json.dumps(report, indent=2), encoding="utf-8")
     return report

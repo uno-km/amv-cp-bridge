@@ -102,5 +102,37 @@ class ReinstallEnvTests(unittest.TestCase):
         self.assertTrue(updater.macos_terminal_script(42).startswith("AMV_WAIT_PID=42 bash -c "))
 
 
+class HotSwapTests(unittest.TestCase):
+    def test_parses_exe_and_sha256_assets_and_check_for_update(self):
+        body = json.dumps({
+            "tag_name": "v9.9.9",
+            "body": "notes",
+            "html_url": "https://github.com/uno-km/amv-cp-bridge/releases/tag/v9.9.9",
+            "assets": [
+                {"name": "amv-cp-bridge.exe", "browser_download_url": "https://x/amv-cp-bridge.exe", "size": 52428800},
+                {"name": "amv-cp-bridge.exe.sha256", "browser_download_url": "https://x/amv-cp-bridge.exe.sha256", "size": 90},
+            ],
+        }).encode("utf-8")
+        with mock.patch("urllib.request.urlopen", return_value=_Response(body)):
+            st = updater.check_for_update()
+        self.assertTrue(st["ok"])
+        self.assertTrue(st["has_update"])
+        self.assertEqual(st["latest_version"], "9.9.9")
+        self.assertEqual(st["release"]["exe_url"], "https://x/amv-cp-bridge.exe")
+        self.assertEqual(st["release"]["sha256_url"], "https://x/amv-cp-bridge.exe.sha256")
+        self.assertEqual(st["release"]["asset_size"], 52428800)
+
+    def test_build_swap_script_atomic_and_relaunch(self):
+        script = updater.build_swap_script(
+            pid=999,
+            target_exe=Path(r"C:\app\amv-cp-bridge.exe"),
+            new_exe=Path(r"C:\tmp\amv-cp-bridge-9.9.9.exe.new"),
+            launch_args=["dashboard"],
+        )
+        self.assertIn("$waitPid = 999", script)
+        self.assertIn("Move-Item", script)
+        self.assertIn("Start-Process -FilePath $target -ArgumentList @('dashboard')", script)
+
+
 if __name__ == "__main__":
     unittest.main()

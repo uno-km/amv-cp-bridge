@@ -917,10 +917,18 @@ OFFLINE_0MB ──[ensure_running()]──▶ IDLE ──[acquire_worker()]─�
 | GET | `/api/chart` | Last 14 days daily usage for chart rendering |
 | POST | `/api/stats/reset` | Delete all telemetry records |
 | POST | `/api/purge` | Kill all Edge CDP processes |
-| POST | `/api/accounts/{port}/login` | Trigger login flow for specific account |
+| POST | `/api/accounts` | Add a new Copilot account (`name`, optional `port`, `profile_dir`, `browser`, `email`) |
+| DELETE | `/api/accounts/{port}` | Remove an account from pool (profile directory is preserved) |
+| POST | `/api/accounts/verify` | Verify live login state of all configured accounts |
+| POST | `/api/accounts/{port}/verify` | Verify live login state of a specific account |
+| POST | `/api/accounts/{port}/login` | Open visible browser window for interactive login |
+| POST | `/api/accounts/{port}/close` | Gracefully close and terminate a single account worker browser |
+| GET | `/api/update/check` | Check GitHub Releases for a newer version (`has_update`, `latest_version`, `release.exe_url`) |
+| POST | `/api/update/apply` | Download latest release EXE, verify SHA-256, spawn atomic hot-swap helper, and auto-restart |
 | GET | `/api/record/{id}` | Full prompt + response for a specific telemetry record |
 | GET | `/v1/models` | List of available model IDs |
-| POST | `/v1/chat/completions` | Main inference endpoint (streaming and non-streaming) |
+| POST | `/v1/chat/completions` | Main text/multimodal inference endpoint (streaming SSE and non-streaming JSON) |
+| POST | `/v1/images/generations` | Native image generation endpoint (`prompt`, `reference_images`, returns `b64_json` bytes) |
 | GET | `/api/stream` | SSE event stream for real-time dashboard |
 | GET | `/dashboard` | Web dashboard HTML |
 | GET | `/favicon.ico` | App icon |
@@ -929,8 +937,9 @@ OFFLINE_0MB ──[ensure_running()]──▶ IDLE ──[acquire_worker()]─�
 
 | Variable | Default | Effect |
 | :--- | :--- | :--- |
-| `COPILOT_EPHEMERAL_MODE` | `true` | Kill Edge after each query |
+| `COPILOT_EPHEMERAL_MODE` | `true` | Default to `cold` mode when `settings.json` is absent |
 | `COPILOT_RATE_LIMIT_RPM` | `30` | Max requests per minute per IP |
+| `COPILOT_TAB_RECYCLE_INTERVAL` | `15` | In `hot` mode, recycle the Copilot tab every N requests to reclaim renderer memory |
 
 ### CLI Commands
 
@@ -949,19 +958,19 @@ OFFLINE_0MB ──[ensure_running()]──▶ IDLE ──[acquire_worker()]─�
 
 ## 8. Operational Constraints and Boundaries
 
-1. **Sequential execution only (by default).** The FIFO `_queue_lock` means only one Copilot query runs at any time. Concurrent requests are queued, not parallelized.
+1. **Per-worker serialization with multi-account concurrency.** Each `CopilotWorker` runs one query at a time under its own lock, while multiple logged-in accounts in `CopilotPool` can process independent requests concurrently and fail over automatically.
 
-2. **No conversation history.** Every query resets the chat (`reset_chat=True`). There is no multi-turn context accumulation. Include any necessary prior context explicitly in each prompt.
+2. **Chat context & tab recycling.** By default (`reset_chat=True`), each request starts a fresh chat. In `hot` mode, the worker automatically recycles the browser tab every `COPILOT_TAB_RECYCLE_INTERVAL` (default 15) requests or after a timeout/DOM error by opening a new tab before closing old tabs.
 
-3. **No function calling / tool use.** The M365 Copilot interface does not expose OpenAI-style function definitions. The gateway ignores `tools` and `functions` parameters if sent.
+3. **No OpenAI tool-call schema.** The M365 Copilot web interface does not expose raw OpenAI `tools`/`function_call` JSON schemas.
 
-4. **No token counting.** The `usage.total_tokens` in the response is an estimate computed as `response_bytes / 4.2`. It is not accurate. Do not use it for billing calculations.
+4. **Token estimation.** `usage.total_tokens` is estimated from UTF-8 byte length (`bytes / 4.2`).
 
-5. **No image input via API.** The REST API accepts only text messages. Image generation via Copilot Designer may work if you include image generation phrasing in the prompt text, but this is untested and unreliable.
+5. **Multimodal & Image Generation.** `/v1/chat/completions` accepts multimodal `image_url` (`data:image/...;base64,...`) and local `file_path` attachments. For dedicated image generation with reference-copy filtering and structured error codes (401 login, 422 policy refusal, 429 quota/transient), use `POST /v1/images/generations`.
 
-6. **No `temperature` / `top_p` control.** These parameters are accepted by the API schema but have no effect on the underlying Copilot model. The model's sampling parameters are controlled entirely by M365 Copilot's backend.
+6. **Sampling parameters.** `temperature` and `top_p` are accepted for OpenAI SDK compatibility; underlying sampling is managed by M365 Copilot.
 
-7. **Login is a human-gated step.** There is no programmatic way to complete Microsoft AAD authentication. A human must click through MFA / password prompts once per session expiry cycle.
+7. **Human-gated initial SSO login.** Initial MFA/SSO login must be completed once per profile expiry via `POST /api/accounts/{port}/login` or the GUI `[계정 연결]` button. Signed-in account tiles and KMSI (`#idSIButton9`) prompts are auto-healed when session cookies remain valid.
 
 ---
 
@@ -970,13 +979,16 @@ OFFLINE_0MB ──[ensure_running()]──▶ IDLE ──[acquire_worker()]─�
 | You want to... | Do this |
 | :--- | :--- |
 | Check if the system is ready | `GET /health` + `GET /api/status` → `available_accounts >= 1` |
-| Send a query | `POST /v1/chat/completions` with `model: gpt-5.6-sol` |
+| Send a text/vision query | `POST /v1/chat/completions` with `model: gpt-5.6-sol` |
+| Generate an image (with optional reference photos) | `POST /v1/images/generations` with `prompt` and `reference_images` (data URLs) |
 | Send a query via MCP | Call `ask_copilot(prompt, mode="auto")` |
 | Do deep math / algorithm reasoning | Use `deepthink_copilot(prompt)` or `model: copilot-deepthink` |
+| Switch between Cold (0MB) and Hot (Warm Standby) | `POST /api/settings` with `{"mode": "hot", "standby_timeout_sec": 300}` |
+| Check & apply GitHub Release update dynamically | `GET /api/update/check` → if `has_update`, `POST /api/update/apply` |
 | Clean up memory | `POST /api/purge` or `amv-cp-bridge purge` |
 | Debug a failed query | Check `GET /api/stats` recent entries + gateway stdout log |
 | Re-login after session expiry | `POST /api/accounts/9333/login` then notify operator |
-| Change port | `amv-cp-bridge gateway --port 11501` |
+| Change port | `amv-cp-bridge gateway --port 11500` |
 | View all past queries | `GET /dashboard` → Usage tab, or `GET /api/stats` |
 | Wipe usage history | `POST /api/stats/reset` |
 | Run the selftest | `amv-cp-bridge selftest --out result.json` |

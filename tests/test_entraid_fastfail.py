@@ -16,7 +16,7 @@ from amv_cp_bridge.notifications import notify_login_required
 
 class TestEntraIdFastFail(unittest.TestCase):
     def test_version_bump(self):
-        self.assertEqual(__version__, "1.3.0")
+        self.assertEqual(__version__, "1.4.0")
 
     def test_is_login_url(self):
         self.assertTrue(_is_login_url("https://login.microsoftonline.com/common/oauth2/v2.0/authorize"))
