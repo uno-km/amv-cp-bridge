@@ -399,8 +399,12 @@ class CopilotWorker:
             return self._alive_cache  # type: ignore[attr-defined]
         alive = False
         try:
-            req = urllib.request.urlopen(f"{self.cdp_url}/json", timeout=0.5)
-            alive = req.status == 200
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.settimeout(0.08)
+                sock.connect(("127.0.0.1", int(self.port)))
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            with opener.open(f"{self.cdp_url}/json", timeout=0.5) as req:
+                alive = req.status == 200
         except Exception:
             pass
         self._alive_cache = alive
