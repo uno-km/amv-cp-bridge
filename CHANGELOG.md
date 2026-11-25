@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.4.1
+
+### Fixed
+- **Session Bloat Prevention & Single-Tab Enforcement**: Added `session.restore_on_startup = 5` and `_prune_stale_session_files()` (removing accumulated `Default/Sessions/Tabs_*` and `Session_*` files while preserving M365 authentication cookies), trimmed extra tabs to a single page in `connect()`, and reused the cold-boot tab in `verify_login()`.
+- **Strict FIFO Queue & Accurate Queue Metrics**: Replaced unordered polling in `CopilotPool.acquire_worker()` with a FIFO ticket queue (`_wait_tickets`, `_ticket_seq`) and separated `queued` vs `running` tracking in active request status.
+- **MCP Double-Launch Collision Prevention**: Restricted direct local `engine` fallback in `mcp_server.py` strictly to `ConnectionRefusedError` and increased default gateway timeout via `COPILOT_MCP_TIMEOUT_SEC` (`360s`), preventing colliding Edge profile launches during slow or queued gateway calls.
+- **Login Window Hold & Scalable Verify Timeout**: Updated `open_login()` to keep already signed-in windows open until user close or timeout (`hold_if_signed_in=True`), eliminated offline `netstat` blocking in `brief()`, and scaled GUI `_verify_all()` request timeout by account count.
+
+### Changed
+- **English-First `README.md` & Updated `FOR_AI_README.md`**: Rewrote `README.md` in clean English (maintaining single-line shell block compliance for `regression_check.py`) and updated `FOR_AI_README.md` with a step-by-step autonomous zero-to-working installation playbook, corrected `master` branch installer URLs, and current `v1.4.1` architecture invariants.
+
 ## 1.4.0
 
 ### Added
