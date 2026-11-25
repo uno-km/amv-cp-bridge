@@ -312,3 +312,55 @@ def test_worker_stream_query_done_stable_completes(tmp_path: Path, monkeypatch) 
     assert w.last_text == "Hello clean answer"
     # Poll loop requires done_stable >= 4 (first poll emits delta, 4 subsequent stable ticks reach done_stable==4)
     assert eval_calls["n"] >= 5
+
+
+def test_acquire_worker_fifo_order_and_queued_metrics(tmp_path: Path, monkeypatch) -> None:
+    cfg_dir = tmp_path / ".amv_cp_bridge"
+    cfg_dir.mkdir()
+    acc_file = cfg_dir / "accounts.json"
+    acc_file.write_text(
+        json.dumps([
+            {"port": 9333, "name": "main", "profile_dir": str(tmp_path / "p9333")},
+            {"port": 9334, "name": "sub", "profile_dir": str(tmp_path / "p9334")},
+        ]),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(engine, "CONFIG_DIR", str(cfg_dir))
+    monkeypatch.setattr(engine, "CONFIG_PATH", str(acc_file))
+    monkeypatch.setattr(engine, "load_settings", lambda: {"mode": "cold", "standby_timeout_sec": 300})
+    monkeypatch.setattr(engine, "telemetry_db", TelemetryDB(tmp_path / "telemetry.db"))
+
+    pool = engine.CopilotPool()
+    started_order: list[str] = []
+    observed_snap: dict[str, int] = {}
+
+    for w in pool.workers:
+        async def slow_img(prompt: str, **kwargs):
+            started_order.append(prompt)
+            if len(started_order) == 2:
+                # While req1 & req2 occupy both workers, req3..req5 must report queued=3, active=2
+                await asyncio.sleep(0.05)
+                observed_snap["active"] = pool.active_count
+                observed_snap["queued"] = pool.queued_count
+                observed_snap["queued_statuses"] = sum(1 for t in pool._task_queue if t["status"] == "queued")
+            await asyncio.sleep(0.18)
+            return {
+                "worker_port": w.port,
+                "text": "ok",
+                "images": [{"b64_json": base64.b64encode(b"x" * 100).decode(), "mime_type": "image/png", "sha256": "s", "bytes_len": 100}],
+            }
+
+        w.generate_image = slow_img  # type: ignore[method-assign]
+
+    async def _run():
+        tasks = []
+        for i in range(1, 6):
+            tasks.append(asyncio.create_task(pool.generate_image(f"req_{i}")))
+            await asyncio.sleep(0.01)
+        await asyncio.gather(*tasks)
+
+    asyncio.run(_run())
+    assert started_order == ["req_1", "req_2", "req_3", "req_4", "req_5"]
+    assert observed_snap == {"active": 2, "queued": 3, "queued_statuses": 3}
+    assert pool.active_count == 0
+    assert pool.queued_count == 0

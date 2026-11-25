@@ -13,7 +13,9 @@ import base64
 import hashlib
 import io
 import contextlib
+import itertools
 import socket
+from collections import deque
 import time
 import uuid
 import asyncio
@@ -1602,6 +1604,8 @@ class CopilotPool:
         self.workers: List[CopilotWorker] = [self._make_worker(acc) for acc in accounts]
         self._accounts_mtime: float = os.path.getmtime(CONFIG_PATH) if os.path.isfile(CONFIG_PATH) else 0.0
         self._queue_lock = asyncio.Lock()
+        self._wait_tickets: deque[int] = deque()
+        self._ticket_seq = itertools.count(1)
         self.queued_count: int = 0
         self.active_count: int = 0
         self.current_task: Optional[str] = None
@@ -1709,25 +1713,36 @@ class CopilotPool:
         self._accounts_mtime = mtime
 
     async def acquire_worker(self, exclude_ports: Optional[set] = None) -> CopilotWorker:
-        """가장 빠르게 사용 가능한 워커를 원자적으로 선점(로그인 만료 워커는 후순위 배치, 없으면 대기)"""
+        """FIFO 대기열 순번을 보장하며 가장 빠르게 사용 가능한 워커를 원자적으로 선점한다."""
         excluded = exclude_ports or set()
         wait_logged = False
-        while True:
-            async with self._queue_lock:
-                self._sync_workers_from_disk()
-                candidates = [w for w in self.workers if w.port not in excluded] or list(self.workers)
-                ready = [w for w in candidates if w.login_state != "required"]
-                fallback = [w for w in candidates if w.login_state == "required"]
-                for w in ready + fallback:
-                    if not w.is_busy():
-                        w._reserved = True
-                        if wait_logged:
-                            print(f"[+] [로드밸런서] {w.name}(포트 {w.port}) 확보 완료!")
-                        return w
-            if not wait_logged and len(self.workers) > 1:
-                print("[*] [로드밸런서] 모든 계정 사용 중. 먼저 완료되는 세션으로 대기 대열에 진입합니다...")
-                wait_logged = True
-            await asyncio.sleep(0.25)
+        ticket = next(self._ticket_seq)
+        self._wait_tickets.append(ticket)
+        try:
+            while True:
+                async with self._queue_lock:
+                    self._sync_workers_from_disk()
+                    if self._wait_tickets and self._wait_tickets[0] == ticket:
+                        candidates = [w for w in self.workers if w.port not in excluded] or list(self.workers)
+                        ready = [w for w in candidates if w.login_state != "required"]
+                        fallback = [w for w in candidates if w.login_state == "required"]
+                        for w in ready + fallback:
+                            if not w.is_busy():
+                                w._reserved = True
+                                self._wait_tickets.popleft()
+                                if wait_logged:
+                                    print(f"[+] [로드밸런서] {w.name}(포트 {w.port}) 확보 완료!")
+                                return w
+                if not wait_logged and len(self.workers) > 1:
+                    print("[*] [로드밸런서] 모든 계정 사용 중. 선입선출(FIFO) 대기열에 진입합니다...")
+                    wait_logged = True
+                await asyncio.sleep(0.05)
+        except BaseException:
+            try:
+                self._wait_tickets.remove(ticket)
+            except ValueError:
+                pass
+            raise
 
     def _serialize_worker_status(
         self,
@@ -2019,7 +2034,7 @@ class CopilotPool:
                            prompt_bytes: int = 0, ip_addr: str = "") -> AsyncGenerator[str, None]:
         task_id, preview, task_entry = self._enqueue_task(prompt, source)
         t_start = time.time()
-        self._mark_running(task_id, preview, task_entry)
+        started_running = False
         excluded_ports: set = set()
         max_attempts = max(1, len(self.workers))
         last_worker: Optional[CopilotWorker] = None
@@ -2030,10 +2045,14 @@ class CopilotPool:
         try:
             for attempt in range(max_attempts):
                 worker = await self.acquire_worker(exclude_ports=excluded_ports)
+                if not started_running:
+                    self._mark_running(task_id, preview, task_entry)
+                    started_running = True
                 last_worker = worker
                 task_entry["worker"] = f"{worker.name}:{worker.port}"
                 self._push({"type": "task_start", "task": dict(task_entry),
                             "active": self.active_count,
+                            "queued": self.queued_count,
                             "workers": self._worker_brief()})
                 try:
                     async for chunk in worker.stream_query(prompt, reset_chat=reset_chat, file_paths=file_paths):
@@ -2067,7 +2086,7 @@ class CopilotPool:
                     ip_addr=ip_addr,
                     success=success,
                 )
-            self._finish_counters(task_id, True)
+            self._finish_counters(task_id, started_running)
 
     async def query(self, prompt: str, file_paths: Optional[List[str]] = None,
                     source: str = "api", client_app: str = "", client_version: str = "",
@@ -2075,7 +2094,7 @@ class CopilotPool:
         """비스트리밍 질의: 응답 완료 전 실패(부분 출력 후 중단 포함) 시 다음 가용 워커로 전체 재시도한다."""
         task_id, preview, task_entry = self._enqueue_task(prompt, source)
         t_start = time.time()
-        self._mark_running(task_id, preview, task_entry)
+        started_running = False
         excluded_ports: set = set()
         max_attempts = max(1, len(self.workers))
         last_worker: Optional[CopilotWorker] = None
@@ -2086,10 +2105,14 @@ class CopilotPool:
         try:
             for attempt in range(max_attempts):
                 worker = await self.acquire_worker(exclude_ports=excluded_ports)
+                if not started_running:
+                    self._mark_running(task_id, preview, task_entry)
+                    started_running = True
                 last_worker = worker
                 task_entry["worker"] = f"{worker.name}:{worker.port}"
                 self._push({"type": "task_start", "task": dict(task_entry),
                             "active": self.active_count,
+                            "queued": self.queued_count,
                             "workers": self._worker_brief()})
                 attempt_chunks: list = []
                 attempt_bytes = 0
@@ -2128,7 +2151,7 @@ class CopilotPool:
                     ip_addr=ip_addr,
                     success=success,
                 )
-            self._finish_counters(task_id, True)
+            self._finish_counters(task_id, started_running)
         return ""
 
     async def generate_image(
@@ -2148,7 +2171,7 @@ class CopilotPool:
         """이미지 생성: 완료 시까지 버퍼링하고 정책 거부를 제외한 실패/할당량 소진 시 다음 워커로 페일오버한다."""
         task_id, preview, task_entry = self._enqueue_task(prompt, source)
         t_start = time.time()
-        self._mark_running(task_id, preview, task_entry)
+        started_running = False
         excluded_ports: set = set()
         max_attempts = max(1, len(self.workers))
         last_worker: Optional[CopilotWorker] = None
@@ -2159,10 +2182,14 @@ class CopilotPool:
         try:
             for attempt in range(max_attempts):
                 worker = await self.acquire_worker(exclude_ports=excluded_ports)
+                if not started_running:
+                    self._mark_running(task_id, preview, task_entry)
+                    started_running = True
                 last_worker = worker
                 task_entry["worker"] = f"{worker.name}:{worker.port}"
                 self._push({"type": "task_start", "task": dict(task_entry),
                             "active": self.active_count,
+                            "queued": self.queued_count,
                             "workers": self._worker_brief()})
                 try:
                     out = await worker.generate_image(
@@ -2205,7 +2232,7 @@ class CopilotPool:
                     model="copilot-image",
                     full_response=resp_text,
                 )
-            self._finish_counters(task_id, True)
+            self._finish_counters(task_id, started_running)
         raise RuntimeError("사용 가능한 Copilot 워커가 없습니다.")
 
     async def new_chat(self):
