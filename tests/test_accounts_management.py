@@ -421,6 +421,72 @@ class TestAccountManagement(unittest.TestCase):
             self.assertFalse(w._needs_tab_recycle)
             new_p.close.assert_awaited_once()
 
+    def test_sanitize_prunes_stale_sessions_and_connect_trims_extra_tabs(self) -> None:
+        prof = self.tmp_path / "prof_clean"
+        sess_dir = prof / "Default" / "Sessions"
+        sess_dir.mkdir(parents=True, exist_ok=True)
+        (prof / "Default" / "Preferences").write_text(
+            json.dumps({"profile": {"exit_type": "Crashed", "exited_cleanly": False}}),
+            encoding="utf-8",
+        )
+        (prof / "Default" / "Cookies").write_bytes(b"cookie-data")
+        (sess_dir / "Tabs_12345").write_bytes(b"old-tabs" * 100)
+        (sess_dir / "Session_12345").write_bytes(b"old-sess" * 100)
+
+        engine._sanitize_profile_exit_type(str(prof))
+        removed = engine._prune_stale_session_files(str(prof))
+        self.assertEqual(removed, 2)
+        self.assertTrue((prof / "Default" / "Cookies").is_file())
+        self.assertEqual(list(sess_dir.iterdir()), [])
+        prefs = json.loads((prof / "Default" / "Preferences").read_text(encoding="utf-8"))
+        self.assertEqual(prefs["profile"]["exit_type"], "Normal")
+        self.assertTrue(prefs["profile"]["exited_cleanly"])
+        self.assertEqual(prefs["session"]["restore_on_startup"], 5)
+
+        w = engine.CopilotWorker(9333, "Main", str(prof))
+        keep_p = MagicMock()
+        keep_p.url = engine.COPILOT_URL
+        keep_p.is_closed.return_value = False
+        extra_p = MagicMock()
+        extra_p.url = engine.COPILOT_URL
+        extra_p.is_closed.return_value = False
+        extra_p.close = AsyncMock()
+        mock_ctx = MagicMock()
+        mock_ctx.pages = [keep_p, extra_p]
+        mock_browser = MagicMock()
+        mock_browser.is_connected.return_value = True
+        w.browser = mock_browser
+        w.context = mock_ctx
+        w.playwright = MagicMock()
+        with patch.object(w, "ensure_running", AsyncMock(return_value=True)):
+            chosen = asyncio.run(w.connect())
+        self.assertIs(chosen, keep_p)
+        extra_p.close.assert_awaited_once()
+
+    def test_ensure_running_kills_process_when_edge_exits_before_cdp(self) -> None:
+        w = engine.CopilotWorker(9333, "Main", str(self.tmp_path / "prof_lock"))
+        fake_proc = MagicMock()
+        fake_proc.pid = 99999
+        fake_proc.poll.return_value = 0
+
+        with patch.object(w, "is_alive", return_value=False), \
+             patch.object(w, "kill_browser_process") as mock_kill, \
+             patch.object(engine.subprocess, "Popen", return_value=fake_proc), \
+             patch.object(engine.asyncio, "sleep", AsyncMock()):
+            with self.assertRaises(RuntimeError):
+                asyncio.run(w.ensure_running(visible=False))
+        self.assertTrue(any(call.kwargs.get("force") is True for call in mock_kill.call_args_list))
+
+    def test_mcp_server_does_not_double_execute_on_gateway_timeout(self) -> None:
+        from amv_cp_bridge import mcp_server
+
+        with patch.object(mcp_server, "_find_gateway_url", return_value="http://127.0.0.1:11500"), \
+             patch.object(mcp_server.urllib.request, "urlopen", side_effect=TimeoutError("timed out")), \
+             patch.object(mcp_server.engine, "query", AsyncMock()) as mock_local_query:
+            res = asyncio.run(mcp_server.ask_copilot("hello", mode="fast"))
+        self.assertIn("오류 발생", res)
+        mock_local_query.assert_not_awaited()
+
 
 if __name__ == "__main__":
     unittest.main()

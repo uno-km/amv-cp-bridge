@@ -209,7 +209,7 @@ def is_non_interactive_desktop() -> bool:
 
 
 def _sanitize_profile_exit_type(profile_dir: str):
-    """Edge/Chrome 비정상 종료 기록으로 인한 '페이지 복원' 팝업 버블을 원천 방지한다."""
+    """Edge/Chrome 비정상 종료 기록 및 세션 복원(다중 탭 누적 폭주)을 원천 방지한다."""
     if not profile_dir:
         return
     pref_path = os.path.join(profile_dir, "Default", "Preferences")
@@ -227,11 +227,45 @@ def _sanitize_profile_exit_type(profile_dir: str):
             if profile_section.get("exited_cleanly") is not True:
                 profile_section["exited_cleanly"] = True
                 modified = True
+        session_section = prefs.get("session")
+        if not isinstance(session_section, dict):
+            session_section = {}
+            prefs["session"] = session_section
+            modified = True
+        # 5 = Open New Tab Page (이전 세션의 누적된 코파일럿 탭 일괄 복원 차단)
+        if session_section.get("restore_on_startup") != 5:
+            session_section["restore_on_startup"] = 5
+            modified = True
         if modified:
             with open(pref_path, "w", encoding="utf-8") as f:
                 json.dump(prefs, f, ensure_ascii=False)
     except Exception:
         pass
+
+
+def _prune_stale_session_files(profile_dir: str) -> int:
+    """브라우저 미실행 상태에서 누적된 Sessions/Tabs_* 스냅샷을 정리해 탭 폭주와 40MB+ 부팅 병목을 제거한다.
+    (쿠키/로그인 토큰/Preferences는 보존한다.)
+    """
+    if not profile_dir:
+        return 0
+    sessions_dir = os.path.join(profile_dir, "Default", "Sessions")
+    if not os.path.isdir(sessions_dir):
+        return 0
+    removed = 0
+    try:
+        for fn in os.listdir(sessions_dir):
+            if fn.startswith(("Tabs_", "Session_")):
+                fp = os.path.join(sessions_dir, fn)
+                try:
+                    if os.path.isfile(fp):
+                        os.unlink(fp)
+                        removed += 1
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return removed
 
 
 # 기본 동작 모드: 로컬 메모리 누수 방지를 위해 단발성 즉시 종료(Ephemeral Mode) 활성화
@@ -427,6 +461,7 @@ class CopilotWorker:
 
         print(f"[!] [{self.name}] 포트 {self.port} 세션 기동 중...")
         _sanitize_profile_exit_type(self.profile_dir)
+        _prune_stale_session_files(self.profile_dir)
         browser_path = _find_browser_binary(self.profile_dir, self.preferred_browser)
         args = [
             browser_path,
@@ -462,15 +497,26 @@ class CopilotWorker:
         self.__dict__.pop("_pids_cache_time", None)
         self.__dict__.pop("_alive_cache_time", None)
 
+        poll_fn = getattr(proc, "poll", None)
         for _ in range(25):
             await asyncio.sleep(0.4)
             if self.is_alive():
                 print(f"[+] [{self.name}] 포트 {self.port} CDP 연결 준비 완료.")
                 return True
-        raise RuntimeError(f"{self.name}(포트 {self.port}) 브라우저를 기동할 수 없습니다.")
+            if callable(poll_fn):
+                rc = poll_fn()
+                if isinstance(rc, int) and not isinstance(rc, bool):
+                    # Edge가 프로필 싱글톤 핸드오프로 즉시 종료된 경우(기존 무디버깅 창에 탭만 추가됨)
+                    break
+        # 기동 실패 시 방금 띄운 프로세스 잔존 방지
+        self.kill_browser_process(force=True)
+        raise RuntimeError(
+            f"{self.name}(포트 {self.port}) 브라우저 디버깅 포트를 열 수 없습니다. "
+            "동일 프로필 폴더로 이미 열린 Edge 창이 있다면 닫은 뒤 다시 시도하십시오."
+        )
 
     async def connect(self, *, visible: bool = False):
-        """CDP에 연결하고 코파일럿 탭 확보"""
+        """CDP에 연결하고 단일 코파일럿 탭만 확보 (여분/중복 탭 자동 정리)"""
         await self.ensure_running(visible=visible)
         if not self.playwright:
             self.playwright = await async_playwright().start()
@@ -479,9 +525,10 @@ class CopilotWorker:
             self.browser = await self.playwright.chromium.connect_over_cdp(self.cdp_url)
             self.context = self.browser.contexts[0]
 
+        pages = list(self.context.pages) if isinstance(getattr(self.context, "pages", None), list) else []
         target_page = None
-        for p in self.context.pages:
-            url = p.url.lower()
+        for p in pages:
+            url = (p.url or "").lower()
             # m365.cloud.microsoft/chat 는 <head>에서 멈추는 경우가 있어 copilot.cloud.microsoft / 로그인 호스트만 재사용한다.
             if "copilot.cloud.microsoft" in url or "copilot.microsoft" in url or _is_login_url(url):
                 target_page = p
@@ -492,6 +539,16 @@ class CopilotWorker:
             target_page = await self.context.new_page()
             await target_page.goto(COPILOT_URL, wait_until="domcontentloaded", timeout=60000)  # load 는 서비스 워커·로그인 iframe 때문에 끝나지 않을 수 있다
             await asyncio.sleep(2.5)
+        elif len(pages) > 1:
+            # 누적된 중복 Copilot/빈 탭을 정리하여 단일 탭 메모리 유지
+            for extra in pages:
+                if extra is target_page:
+                    continue
+                try:
+                    if not extra.is_closed():
+                        await extra.close()
+                except Exception:
+                    pass
 
         self.page = target_page
         return self.page
@@ -533,21 +590,10 @@ class CopilotWorker:
         return new_page
 
     async def cleanup(self):
-        """Playwright 연결 세션 정상 정리"""
+        """Playwright 연결 세션 정상 정리 (CDP 컨텍스트 블로킹 없이 안전 해제)"""
         self._tab_request_count = 0
         self._needs_tab_recycle = False
-        try:
-            if self.page and not self.page.is_closed():
-                await self.page.close()
-        except Exception:
-            pass
         self.page = None
-
-        try:
-            if self.context:
-                await self.context.close()
-        except Exception:
-            pass
         self.context = None
 
         try:
@@ -880,18 +926,39 @@ class CopilotWorker:
         except Exception:
             pass
 
-    async def open_login(self, timeout: float = LOGIN_TIMEOUT_SEC) -> bool:
-        """로그인할 수 있도록 브라우저 창을 화면에 띄우고, 입력창이 보이면 연결 완료로 기록한다."""
+    async def open_login(self, timeout: float = LOGIN_TIMEOUT_SEC, *, hold_if_signed_in: bool = True) -> bool:
+        """로그인할 수 있도록 브라우저 창을 화면에 띄우고, 이미 로그인된 계정('창 열기')이면 사용자가 닫을 때까지 유지한다."""
         async with self._lock:
+            self._cancel_standby()
+            was_signed_in = self.login_state == "ok"
             try:
                 self.kill_browser_process(force=True)
                 await self.ensure_running(visible=True)
                 page = await self.connect(visible=True)
                 await self._bring_window_to_front(page)
-                connected = await self._wait_for_composer(page, timeout, fast_fail=False)
+                # 수동 로그인 창에서는 사용자가 계정을 직접 선택/전환할 수 있도록 타일 자동 클릭을 끈다.
+                connected = await self._wait_for_composer(
+                    page, timeout, fast_fail=False, allow_tile_autoclick=False
+                )
+                if connected and hold_if_signed_in and was_signed_in:
+                    # '창 열기' 모드: 사용자가 계정을 확인·전환한 뒤 직접 창을 닫을 때까지 대기
+                    hold_deadline = time.time() + max(10.0, float(timeout))
+                    while time.time() < hold_deadline:
+                        if not self.browser or not self.browser.is_connected() or page.is_closed():
+                            break
+                        await asyncio.sleep(0.5)
+                    # 닫히기 직전/유지 중 상태 재판별 (로그아웃했거나 다른 계정으로 바꿨을 수 있음)
+                    if self.browser and self.browser.is_connected() and not page.is_closed():
+                        connected = await self._wait_for_composer(
+                            page, 3.0, fast_fail=True, allow_tile_autoclick=False
+                        )
                 self._set_login_state("ok" if connected else "required")
                 if connected:
-                    ident = await _extract_copilot_identity(page, self.profile_dir)
+                    ident = ""
+                    if self.browser and self.browser.is_connected() and not page.is_closed():
+                        ident = await _extract_copilot_identity(page, self.profile_dir)
+                    else:
+                        ident = _extract_profile_account_hint(self.profile_dir) or self.login_identity
                     if self._last_selected_email and "@" not in (ident or ""):
                         ident = f"{ident} ({self._last_selected_email})" if ident else self._last_selected_email
                     self._set_verify_meta(identity=ident, detail="verified_login", verified_at=time.time())
@@ -906,15 +973,16 @@ class CopilotWorker:
             finally:
                 await self._graceful_close_browser(self.context, self.page)
                 await self.cleanup()
-                self.kill_browser_process()
+                self.kill_browser_process(force=True)
 
     async def verify_login(self, timeout: float = 45.0) -> Dict[str, Any]:
-        """실제 Copilot URL에 새 탭으로 진입해 현재 세션 로그인 상태와 계정 식별 정보를 점검한다."""
+        """실제 Copilot URL에 진입해 현재 세션 로그인 상태와 계정 식별 정보를 점검한다."""
         async with self._lock:
             self.verifying = True
             was_alive = self.is_alive()
             self._cancel_standby()
             probe_page: Optional[Page] = None
+            opened_new_probe = False
             ctx: Optional[BrowserContext] = None
             own_pw = None
             own_browser = None
@@ -927,7 +995,20 @@ class CopilotWorker:
                     own_pw = await async_playwright().start()
                     own_browser = await own_pw.chromium.connect_over_cdp(self.cdp_url)
                     ctx = own_browser.contexts[0] if own_browser.contexts else await own_browser.new_context()
-                probe_page = await ctx.new_page()
+
+                existing_pages = list(ctx.pages) if isinstance(getattr(ctx, "pages", None), list) else []
+                if not was_alive and existing_pages:
+                    probe_page = existing_pages[0]
+                    for extra in existing_pages[1:]:
+                        try:
+                            if not extra.is_closed():
+                                await extra.close()
+                        except Exception:
+                            pass
+                else:
+                    probe_page = await ctx.new_page()
+                    opened_new_probe = True
+
                 try:
                     await probe_page.goto(COPILOT_URL, wait_until="commit", timeout=min(12000, max(6000, int(timeout * 1000))))
                 except Exception:
@@ -972,7 +1053,7 @@ class CopilotWorker:
                 }
             finally:
                 self.verifying = False
-                if probe_page is not None and not probe_page.is_closed():
+                if opened_new_probe and probe_page is not None and not probe_page.is_closed():
                     try:
                         await probe_page.close()
                     except Exception:
@@ -1573,11 +1654,10 @@ class CopilotPool:
         for w in self.workers:
             busy = w.is_busy()
             alive = w.is_alive()
-            pids = w.get_listening_pids()
+            pids = w.get_listening_pids() if alive else []
             if not busy:
                 available_cnt += 1
             st = "BUSY" if busy else ("IDLE" if alive else "OFFLINE_0MB")
-            standby_rem = round(max(0, w._standby_deadline - now), 1) if (alive and not busy and w._standby_deadline) else 0.0
             worker_details.append(self._serialize_worker_status(w, now, include_pids=True, pids=pids, status_override=st))
 
         elapsed = round(time.time() - self.task_start_time, 1) if (self.active_count > 0 and self.task_start_time) else 0.0

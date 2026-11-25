@@ -178,18 +178,19 @@ async def root_redirect():
 @app.get("/health")
 @app.get("/status")
 async def health_check():
+    pool_status = await asyncio.to_thread(engine.get_status_summary)
     return {
         "status": "healthy",
         "gateway": "amv-cp-bridge",
         "version": __version__,
-        "pool_status": engine.get_status_summary(),
+        "pool_status": pool_status,
         "timestamp": time.time()
     }
 
 @app.get("/api/status")
 async def api_status():
     """실시간 엔진 큐, 워커 가용성, 태스크 진행 상태 반환"""
-    return engine.get_telemetry_status()
+    return await asyncio.to_thread(engine.get_telemetry_status)
 
 @app.get("/api/stats")
 async def api_stats():
@@ -298,7 +299,8 @@ class AccountCreateRequest(BaseModel):
 @app.get("/api/accounts")
 async def api_list_accounts():
     """등록된 Copilot 계정 목록과 실시간 상태를 반환한다."""
-    return {"ok": True, "accounts": engine.list_accounts()}
+    accounts = await asyncio.to_thread(engine.list_accounts)
+    return {"ok": True, "accounts": accounts}
 
 
 @app.post("/api/accounts", status_code=201)

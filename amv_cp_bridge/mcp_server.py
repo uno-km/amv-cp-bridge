@@ -10,6 +10,7 @@ import sys
 import os
 import asyncio
 import json
+import urllib.error
 import urllib.request
 from typing import Literal, Optional
 from mcp.server.fastmcp import FastMCP
@@ -96,13 +97,30 @@ async def ask_copilot(
             )
             # 게이트웨이 요청은 비동기 루프 블로킹 방지를 위해 별도 스레드에서 실행
             loop = asyncio.get_running_loop()
+            mcp_timeout = max(30.0, float(os.environ.get("COPILOT_MCP_TIMEOUT_SEC", "360")))
             def _call():
-                with urllib.request.urlopen(req, timeout=180) as r:
+                with urllib.request.urlopen(req, timeout=mcp_timeout) as r:
                     return json.loads(r.read().decode())
             resp = await loop.run_in_executor(None, _call)
             return resp["choices"][0]["message"]["content"]
+        except urllib.error.HTTPError as he:
+            detail = he.read().decode("utf-8", errors="replace") if he.fp else str(he)
+            print(f"[!] Gateway HTTP {he.code} (이중 실행 방지를 위해 로컬 폴백 생략): {detail[:200]}", file=sys.stderr)
+            return f"[오류 발생] 게이트웨이 HTTP {he.code}: {detail[:300]}"
+        except urllib.error.URLError as ue:
+            reason = getattr(ue, "reason", None)
+            if isinstance(reason, ConnectionRefusedError):
+                print(f"[!] Gateway unreachable, falling back to direct engine: {ue}", file=sys.stderr)
+            else:
+                # Timeout 등: 게이트웨이가 이미 Edge 프로필을 점유 처리 중일 수 있으므로 이중 실행 금지
+                print(f"[!] Gateway request error (이중 Edge 충돌 방지): {ue}", file=sys.stderr)
+                return f"[오류 발생] 코파일럿 게이트웨이 응답 지연/오류 (기존 세션 보호를 위해 중복 실행하지 않았습니다): {ue}"
+        except TimeoutError as te:
+            print(f"[!] Gateway timeout ({mcp_timeout}s) — 로컬 중복 실행 생략: {te}", file=sys.stderr)
+            return f"[오류 발생] 코파일럿 게이트웨이 응답 시간 초과: {te}"
         except Exception as e:
-            print(f"[!] Gateway call failed, falling back to direct engine: {e}")
+            print(f"[!] Gateway call failed (이중 실행 방지): {e}", file=sys.stderr)
+            return f"[오류 발생] 코파일럿 게이트웨이 호출 실패: {e}"
 
     # 2. 게이트웨이가 없거나 통신 실패 시 로컬 엔진으로 직결 폴백
     try:
@@ -125,6 +143,17 @@ async def deepthink_copilot(prompt: str) -> str:
 @mcp.tool()
 async def get_copilot_status() -> str:
     """로컬 엣지 브라우저(포트 9333/9334) 디버깅 세션 및 M365 코파일럿 상태를 점검합니다."""
+    gw_url = _find_gateway_url()
+    if gw_url:
+        try:
+            loop = asyncio.get_running_loop()
+            def _fetch():
+                with urllib.request.urlopen(f"{gw_url}/health", timeout=2.0) as r:
+                    return json.loads(r.read().decode("utf-8", errors="replace"))
+            data = await loop.run_in_executor(None, _fetch)
+            return f"[상태 점검 · Gateway {gw_url}] {data.get('pool_status') or data}"
+        except Exception:
+            pass
     try:
         summary = engine.get_status_summary()
         return f"[상태 점검] {summary}"

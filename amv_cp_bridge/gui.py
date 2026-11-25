@@ -995,8 +995,9 @@ def _launch_main_gui(host: str, port: int, server_ok: bool = True):
 
         def request_verify():
             try:
+                req_timeout = 55 if account_port is not None else max(90, 45 * max(2, len(worker_widgets)))
                 urllib.request.urlopen(
-                    urllib.request.Request(f"{BASE}{path}", method="POST"), timeout=45
+                    urllib.request.Request(f"{BASE}{path}", method="POST"), timeout=req_timeout
                 )
             except urllib.error.HTTPError as he:
                 raw = he.read().decode("utf-8", errors="replace")
